@@ -30,10 +30,6 @@ LSM6DS3 myIMU(I2C_MODE, 0x6A);    //I2C device address 0x6A
 BLEService imuService("0769bb8e-b496-4fdd-b53b-87462ff423d0");  // 自訂服務UUID
 BLECharacteristic imuDataChar("8ee82f5b-76c7-4170-8f49-fff786257090", BLERead | BLENotify, 30);  // 30 bytes資料
 
-// 加入UART服務 (Nordic UART Service)
-BLEService uartService("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");  // Nordic UART Service
-BLECharacteristic uartTxChar("6E400002-B5A3-F393-E0A9-E50E24DCCA9E", BLERead | BLENotify, 20);  // TX
-BLECharacteristic uartRxChar("6E400003-B5A3-F393-E0A9-E50E24DCCA9E", BLEWrite | BLEWriteWithoutResponse, 20);  // RX
 
 // IMU校正變數
 bool imuReady = false;
@@ -77,12 +73,6 @@ void setup() {
     BLE.addService(imuService);
     imuDataChar.setValue((uint8_t*)"", 0);  // 設定初始空值
     
-    // 設定UART服務
-    uartService.addCharacteristic(uartTxChar);
-    uartService.addCharacteristic(uartRxChar);
-    BLE.addService(uartService);
-    uartTxChar.setValue((uint8_t*)"", 0);
-    uartRxChar.setValue((uint8_t*)"", 0);
     
     // Set BLE device name and start advertising
     BLE.setLocalName("SmartRacket");
@@ -115,10 +105,9 @@ void loop() {
         
         Serial.println("Connected to central");
         
-        // 初始化時間記錄 - 降低頻率避免Windows斷線
-        const unsigned long interval = 100; // 每 100ms 傳一次 (10Hz)
+        // 初始化時間記錄
+        const unsigned long interval = 20; // 每 20ms 傳一次 (50Hz)
         unsigned long lastSendTime = millis();
-        unsigned long lastKeepAlive = millis();
         
         while (central.connected()) {
             unsigned long now = millis();
@@ -176,36 +165,11 @@ void loop() {
                 Serial.print(',');
                 Serial.println(voltageRaw);
                 
-                // 同時透過UART服務發送CSV資料（降低精度減少大小）
-                String csvData = String(timestamp) + "," + 
-                               String(aX, 4) + "," + 
-                               String(aY, 4) + "," + 
-                               String(aZ, 4) + "," + 
-                               String(gX, 4) + "," + 
-                               String(gY, 4) + "," + 
-                               String(gZ, 4) + "," + 
-                               String(voltageRaw) + "\n";
-                
-                if (central.connected()) {
-                    uartTxChar.writeValue(csvData.c_str(), csvData.length());
-                }
                 
                 // 固定用 += interval，避免節奏往後推延
                 lastSendTime += interval;
             }
             
-            // 每5秒發送一次保活信號
-            if (now - lastKeepAlive > 5000) {
-                if (central.connected()) {
-                    // 發送一個簡單的保活信號
-                    uint8_t keepAlive[30] = {0};
-                    uint32_t keepAliveTime = millis();
-                    memcpy(keepAlive, &keepAliveTime, 4);
-                    imuDataChar.writeValue(keepAlive, 30);
-                    Serial.println("發送保活信號");
-                }
-                lastKeepAlive = now;
-            }
             
             // 檢查連接狀態
             if (!central.connected()) {

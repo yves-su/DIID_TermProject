@@ -21,13 +21,8 @@ class BLEIMUReceiver:
         self.imu_service_uuid = "0769bb8e-b496-4fdd-b53b-87462ff423d0"
         self.imu_characteristic_uuid = "8ee82f5b-76c7-4170-8f49-fff786257090"
         
-        # UART服務
-        self.uart_service_uuid = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-        self.uart_tx_uuid = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
-        
         self.connected = False
         self.data_count = 0
-        self.buffer = ""  # 用於拼接被截斷的UART資料
         
     def imu_notification_handler(self, sender, data):
         """自定義IMU服務通知處理器"""
@@ -55,40 +50,6 @@ class BLEIMUReceiver:
         except Exception as e:
             print(f"IMU資料解析錯誤: {e}")
     
-    def uart_notification_handler(self, sender, data):
-        """UART服務通知處理器"""
-        try:
-            # 將bytes轉換為字串
-            message = data.decode('utf-8')
-            
-            # 拼接資料到緩衝區
-            self.buffer += message
-            
-            # 檢查是否有完整的行
-            while '\n' in self.buffer:
-                line, self.buffer = self.buffer.split('\n', 1)
-                line = line.strip()
-                
-                if line and ',' in line:
-                    parts = line.split(',')
-                    if len(parts) >= 8:
-                        self.data_count += 1
-                        timestamp = parts[0]
-                        accelX, accelY, accelZ = parts[1], parts[2], parts[3]
-                        gyroX, gyroY, gyroZ = parts[4], parts[5], parts[6]
-                        voltage = parts[7]
-                        
-                        print(f"UART資料包 #{self.data_count:4d}:")
-                        print(f"  時間戳: {timestamp}")
-                        print(f"  加速度: [{accelX}, {accelY}, {accelZ}]")
-                        print(f"  角速度: [{gyroX}, {gyroY}, {gyroZ}]")
-                        print(f"  電壓: {voltage}")
-                        print("-" * 50)
-                    else:
-                        print(f"UART資料不完整: {line}")
-                        
-        except Exception as e:
-            print(f"UART資料解析錯誤: {e}")
     
     async def scan_and_connect(self):
         """掃描並連接BLE設備"""
@@ -126,14 +87,11 @@ class BLEIMUReceiver:
             return
         
         try:
-            # 啟動兩種服務的通知
+            # 啟動IMU服務的通知
             print("啟動IMU服務通知...")
             await self.client.start_notify(self.imu_characteristic_uuid, self.imu_notification_handler)
             
-            print("啟動UART服務通知...")
-            await self.client.start_notify(self.uart_tx_uuid, self.uart_notification_handler)
-            
-            print("開始接收資料...")
+            print("開始接收IMU資料...")
             print("按 Ctrl+C 停止")
             print("=" * 60)
             
