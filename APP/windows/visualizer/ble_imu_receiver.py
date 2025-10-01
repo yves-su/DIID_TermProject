@@ -39,16 +39,18 @@ class BLEIMUReceiver:
                 voltage = struct.unpack('<H', data[28:30])[0] / 100.0
                 
                 self.data_count += 1
-                print(f"IMU資料包 #{self.data_count:4d}:")
-                print(f"  時間戳: {timestamp}")
-                print(f"  加速度: [{accelX:.6f}, {accelY:.6f}, {accelZ:.6f}]")
-                print(f"  角速度: [{gyroX:.6f}, {gyroY:.6f}, {gyroZ:.6f}]")
-                print(f"  電壓: {voltage:.2f}V")
-                print("-" * 50)
+                
+                # 計算姿態角度
+                import math
+                pitch = math.atan2(-accelX, math.sqrt(accelY*accelY + accelZ*accelZ)) * 180 / math.pi
+                roll = math.atan2(accelY, accelZ) * 180 / math.pi
+                
+                # 使用 \r 讓游標回到行首，不換行
+                print(f"\r資料包 #{self.data_count:4d} | 時間:{timestamp} | 加速度:[{accelX:6.3f},{accelY:6.3f},{accelZ:6.3f}] | 角速度:[{gyroX:6.2f},{gyroY:6.2f},{gyroZ:6.2f}] | 電壓:{voltage:4.2f}V | 角度:Roll={roll:6.1f}°,Pitch={pitch:6.1f}°", end='', flush=True)
             else:
-                print(f"IMU資料長度錯誤: {len(data)} bytes")
+                print(f"\r資料長度錯誤: {len(data)} bytes", end='', flush=True)
         except Exception as e:
-            print(f"IMU資料解析錯誤: {e}")
+            print(f"\r資料解析錯誤: {e}", end='', flush=True)
     
     
     async def scan_and_connect(self):

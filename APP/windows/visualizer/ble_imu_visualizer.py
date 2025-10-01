@@ -15,6 +15,11 @@ from OpenGL.GLU import *
 import struct
 from bleak import BleakClient, BleakScanner
 import asyncio
+import nest_asyncio
+import threading
+
+# 允許嵌套事件循環（Spyder需要）
+nest_asyncio.apply()
 
 class BLEIMUVisualizer:
     def __init__(self):
@@ -26,7 +31,8 @@ class BLEIMUVisualizer:
         # IMU資料
         self.accel = [0, 0, 0]  # 加速度
         self.gyro = [0, 0, 0]   # 角速度
-        self.temp = 0           # 溫度
+        self.voltage = 0        # 電壓
+        self.debug_mode = False # 除錯模式
         
         # 姿態角度（歐拉角）
         self.roll = 0   # 繞X軸旋轉
@@ -45,7 +51,7 @@ class BLEIMUVisualizer:
         """初始化顯示視窗"""
         pygame.init()
         self.screen = pygame.display.set_mode((800, 600), DOUBLEBUF | OPENGL)
-        pygame.display.set_caption("BLE IMU 3D 視覺化 - SmartRacket")
+        pygame.display.set_caption("BLE IMU 3D 視覺化 - SmartRacket (按H查看幫助)")
         
         # 設定OpenGL視角
         glEnable(GL_DEPTH_TEST)
@@ -62,12 +68,16 @@ class BLEIMUVisualizer:
         gluPerspective(45, 800/600, 0.1, 50.0)
         glTranslatef(0.0, 0.0, -5.0)
     
-    async def scan_and_connect(self):
-        """掃描並連接BLE設備"""
+    def scan_and_connect_sync(self):
+        """同步版本的BLE掃描和連接"""
         print("正在掃描BLE設備...")
         
         try:
-            devices = await BleakScanner.discover(timeout=5.0)
+            # 在新的事件循環中運行
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            devices = loop.run_until_complete(BleakScanner.discover(timeout=5.0))
             target_device = None
             
             for device in devices:
@@ -81,9 +91,14 @@ class BLEIMUVisualizer:
                 return False
             
             self.client = BleakClient(target_device.address)
-            await self.client.connect()
+            loop.run_until_complete(self.client.connect())
             print("BLE連接成功!")
             self.connected = True
+            
+            # 啟動通知
+            loop.run_until_complete(self.client.start_notify(self.characteristic_uuid, self.notification_handler))
+            print("BLE通知已啟動")
+            
             return True
         except Exception as e:
             print(f"BLE掃描/連接失敗: {e}")
@@ -94,7 +109,7 @@ class BLEIMUVisualizer:
         """BLE通知處理器"""
         try:
             if len(data) == 30:
-                # 解析二進位資料
+                # 解析二進位資料 - 對應main.ino的資料格式
                 timestamp = struct.unpack('<I', data[0:4])[0]  # 4 bytes timestamp
                 accelX = struct.unpack('<f', data[4:8])[0]     # 4 bytes accelX
                 accelY = struct.unpack('<f', data[8:12])[0]    # 4 bytes accelY
@@ -102,14 +117,20 @@ class BLEIMUVisualizer:
                 gyroX = struct.unpack('<f', data[16:20])[0]    # 4 bytes gyroX
                 gyroY = struct.unpack('<f', data[20:24])[0]    # 4 bytes gyroY
                 gyroZ = struct.unpack('<f', data[24:28])[0]    # 4 bytes gyroZ
-                tempC = struct.unpack('<f', data[28:30] + b'\x00\x00')[0]  # 2 bytes tempC
+                voltageRaw = struct.unpack('<H', data[28:30])[0]  # 2 bytes voltage (uint16)
                 
                 self.accel = [accelX, accelY, accelZ]
                 self.gyro = [gyroX, gyroY, gyroZ]
-                self.temp = tempC
+                self.voltage = voltageRaw / 100.0  # 轉換為實際電壓值
                 
                 # 計算姿態角度
                 self.calculate_attitude()
+                
+                # 可選：顯示接收到的資料（除錯用）
+                if hasattr(self, 'debug_mode') and self.debug_mode:
+                    print(f"IMU資料: 時間={timestamp}, 加速度=[{accelX:.3f},{accelY:.3f},{accelZ:.3f}], 角速度=[{gyroX:.3f},{gyroY:.3f},{gyroZ:.3f}], 電壓={self.voltage:.2f}V")
+            else:
+                print(f"資料長度錯誤: {len(data)} bytes (期望30 bytes)")
         except Exception as e:
             print(f"資料解析錯誤: {e}")
     
@@ -124,7 +145,12 @@ class BLEIMUVisualizer:
         
         # 使用陀螺儀積分計算偏航角 (yaw)
         # 注意：這只是簡化版本，實際應用需要更複雜的融合算法
-        self.yaw += self.gyro[2] * 0.02  # 假設20ms更新間隔
+        self.yaw += self.gyro[2] * 0.02  # 20ms更新間隔 (50Hz)
+        
+        # 限制角度範圍
+        self.roll = self.roll % 360
+        self.pitch = self.pitch % 360
+        self.yaw = self.yaw % 360
     
     def draw_axes(self):
         """繪製三軸指標"""
@@ -212,20 +238,47 @@ class BLEIMUVisualizer:
                 elif event.key == pygame.K_r:
                     # 重置姿態
                     self.roll = self.pitch = self.yaw = 0
+                    print("姿態已重置")
+                elif event.key == pygame.K_d:
+                    # 切換除錯模式
+                    self.debug_mode = not self.debug_mode
+                    print(f"除錯模式: {'開啟' if self.debug_mode else '關閉'}")
+                elif event.key == pygame.K_v:
+                    # 顯示電壓資訊
+                    print(f"當前電壓: {self.voltage:.2f}V")
+                elif event.key == pygame.K_h:
+                    # 顯示幫助
+                    self.show_help()
     
-    async def run(self):
+    def show_help(self):
+        """顯示幫助資訊"""
+        print("\n" + "="*50)
+        print("BLE IMU 3D 視覺化程式 - 鍵盤控制")
+        print("="*50)
+        print("ESC - 退出程式")
+        print("R   - 重置姿態角度")
+        print("D   - 切換除錯模式")
+        print("V   - 顯示電壓資訊")
+        print("H   - 顯示此幫助")
+        print("="*50)
+        print("三軸顏色說明:")
+        print("紅色 - X軸 (前後)")
+        print("綠色 - Y軸 (左右)")
+        print("藍色 - Z軸 (上下)")
+        print("="*50)
+    
+    def run(self):
         """主執行迴圈"""
         # 連接BLE設備
-        if not await self.scan_and_connect():
+        if not self.scan_and_connect_sync():
             print("無法連接BLE設備，使用模擬資料")
             self.simulate_data = True
         else:
-            # 啟動通知
-            await self.client.start_notify(self.characteristic_uuid, self.notification_handler)
             self.simulate_data = False
         
         print("BLE IMU 3D 視覺化程式啟動")
-        print("按 ESC 退出，按 R 重置姿態")
+        print("按 H 查看鍵盤控制說明")
+        self.show_help()
         
         clock = pygame.time.Clock()
         
@@ -242,13 +295,15 @@ class BLEIMUVisualizer:
             
             # 控制幀率
             clock.tick(60)
-            
-            # 讓出控制權給asyncio
-            await asyncio.sleep(0.001)
         
         # 清理資源
         if self.client and self.connected:
-            await self.client.disconnect()
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self.client.disconnect())
+            except:
+                pass
         pygame.quit()
     
     def simulate_imu_data(self):
@@ -258,10 +313,14 @@ class BLEIMUVisualizer:
         self.pitch = 20 * math.cos(t * 0.7)
         self.yaw = 15 * math.sin(t * 0.5)
 
-async def main():
+def main():
     """主函數"""
     visualizer = BLEIMUVisualizer()
-    await visualizer.run()
+    visualizer.run()
+
+def run_visualizer():
+    """Spyder專用執行函數"""
+    main()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
