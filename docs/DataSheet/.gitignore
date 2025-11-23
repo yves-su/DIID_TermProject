@@ -1,5 +1,5 @@
 *.iml
 .gradle
 
- *
- 
+docs/DataSheet/nRF52840_PS_v1.5.pdf
+docs/DataSheet/XIAO_Big_Power_Small_Board_v20240307.pdf
