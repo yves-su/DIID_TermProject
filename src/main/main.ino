@@ -75,8 +75,12 @@ float offsetGX = 0.0f, offsetGY = 0.0f, offsetGZ = 0.0f;
 // 電池規格：501230, 3.7V, 150mAh
 // 正常工作電壓範圍：3.2V (低電量警告) ~ 4.2V (滿電)
 // 充電模式切換點：3.5V (低於3.5V使用高電流充電，高於3.5V使用低電流充電)
-unsigned long lastVoltageReadTime = -60000;  // 上次電壓讀取時間 (初始值設為1分鐘前)
-int16_t voltageRaw = 0;                      // 原始電壓讀取值 (0-1023, ADC 10-bit)
+unsigned long lastVoltageReadTime = -10000;  // 上次電壓讀取時間 (初始值設為10秒前)
+unsigned long lastVoltageUpdateTime = 0;     // 上次電壓更新時間
+int16_t voltageRaw = 0;                       // 原始電壓讀取值 (12-bit等效值，用於BLE傳輸)
+int16_t voltageRawCached = 0;                // 緩存的電壓原始值（每10秒更新一次）
+const unsigned long VOLTAGE_READ_INTERVAL = 10000;  // 電壓讀取間隔：10秒
+const int VOLTAGE_SAMPLE_COUNT = 30;         // 每次讀取30筆取平均
 bool isHighCurrentCharging = false;          // 是否為高電流充電模式
 
 #define LEDR        (11u)
@@ -239,7 +243,10 @@ void loop() {
         // 串列埠輸出（簡化：只輸出六軸資料和電壓）
         // --------------------------------------------------------------------
         // 計算實際電池電壓
-        float calibrationConstant = 10.8f;  // 可以根據實際測量值調整
+        // 校準調整：根據當前讀值重新校準
+        // 如果讀到的原始值是 523 (10-bit) → 2092 (12-bit)，實際電壓應該是 4.14V
+        // 計算：4.14 = 2092 * K / 4096，得到 K ≈ 8.11
+        float calibrationConstant = 8.11f;  // 根據當前讀值重新校準（2025-01-24）
         float voltage = (float)voltageRaw * calibrationConstant / 4096.0f;
         
         // 輸出格式：aX,aY,aZ,gX,gY,gZ,voltage
@@ -275,6 +282,22 @@ void loop() {
         static bool firstConnection = true;
         if (firstConnection) {
             Serial.println("Connected to central");
+            // 初始化電壓緩存值（立即讀取一次，如果失敗則重試）
+            int retryCount = 0;
+            while (retryCount < 3 && voltageRawCached == 0) {
+                voltageRawCached = readVoltageAverage();
+                if (voltageRawCached == 0) {
+                    retryCount++;
+                    delay(100);  // 等待100ms後重試
+                }
+            }
+            if (voltageRawCached == 0) {
+                Serial.println("Warning: Failed to read voltage, using default value");
+                // 如果仍然失敗，使用一個合理的預設值（約3.7V對應的ADC值）
+                // 3.7V ≈ 1400 (12-bit ADC值，使用校準常數11.68計算)
+                voltageRawCached = 1400;
+            }
+            lastVoltageUpdateTime = now;
             firstConnection = false;
         }
         
@@ -303,34 +326,26 @@ void loop() {
                 gZ = myIMU.readFloatGyroZ() - offsetGZ;
             }
             
-            // 啟用分壓電路
-            digitalWrite(P0_14, LOW);
-            delayMicroseconds(500);
-            
-            // 讀取 ADC 值
-            voltageRaw = analogRead(A0);
-            
-            // 關閉分壓電路
-            digitalWrite(P0_14, HIGH);
-            
-            if (voltageRaw < 0) voltageRaw = 0;
-            
-            // 轉換 10-bit 到 12-bit：12bit_value = 10bit_value * 4
-            if (voltageRaw <= 1023) {
-                voltageRaw = voltageRaw * 4;  // 10-bit 轉 12-bit
+            // 檢查是否需要更新電壓讀數（每10秒更新一次）
+            // 或者如果緩存值為0（首次讀取失敗），立即重試
+            if ((now - lastVoltageUpdateTime >= VOLTAGE_READ_INTERVAL) || (voltageRawCached == 0)) {
+                // 讀取30筆電壓並取平均
+                int16_t newVoltage = readVoltageAverage();
+                // 只有當讀取成功（非0）時才更新緩存值
+                if (newVoltage > 0) {
+                    voltageRawCached = newVoltage;
+                    Serial.print("Voltage updated: ");
+                    Serial.print((float)newVoltage * 11.68f / 4096.0f, 3);
+                    Serial.println("V");
+                } else {
+                    // 如果讀取失敗，記錄警告但保留舊值
+                    Serial.println("Warning: Voltage read failed, keeping cached value");
+                }
+                lastVoltageUpdateTime = now;
             }
             
-            // 檢測 USB 供電模式
-            // 在 USB 模式下，電池可能被斷開，電壓讀值會異常低
-            // 如果電壓讀值 < 200（約 < 1.3V），標記為 USB 供電模式
-            // 注意：這個值可能需要根據實際硬體調整
-            bool isUSBPowered = (voltageRaw < 200);
-            
-            // 在 USB 模式下，可以選擇：
-            // 1. 發送 0 或特殊值表示 USB 供電
-            // 2. 發送實際讀值（讓 Android 端判斷）
-            // 這裡選擇發送實際讀值，讓 Android 端判斷
-            // 如果需要，可以設置特殊標記值，例如：if (isUSBPowered) voltageRaw = 0xFFFF;
+            // 使用緩存的電壓值
+            voltageRaw = voltageRawCached;
             
             // 封包結構: [時間戳4] + [加速度12] + [陀螺儀12] + [電壓2] = 30 bytes
             memcpy(buffer, &timestamp, 4);        // 0-3: 時間戳 (4 bytes)
@@ -405,6 +420,50 @@ void calibrateIMUOffsets() {
 }
 
 // ============================================================================
+// 電壓讀取函數（讀取30筆取平均）
+// ============================================================================
+/**
+ * 讀取30筆電壓值並計算平均值
+ * 每次讀取前後都會啟用/關閉分壓電路以省電
+ * @return 平均後的12-bit等效電壓原始值
+ */
+int16_t readVoltageAverage() {
+    unsigned long sum = 0;
+    int validSamples = 0;
+    
+    // 啟用分壓電路（P0.14 = LOW）
+    digitalWrite(P0_14, LOW);
+    delayMicroseconds(500);  // 等待電壓穩定
+    
+    // 讀取30筆電壓值
+    for (int i = 0; i < VOLTAGE_SAMPLE_COUNT; i++) {
+        int16_t raw = analogRead(A0);
+        
+        // 驗證讀數是否在合理範圍內（10-bit: 0-1023）
+        if (raw >= 0 && raw <= 1023) {
+            // 轉換為12-bit等效值
+            int16_t raw12bit = raw * 4;
+            sum += raw12bit;
+            validSamples++;
+        }
+        
+        // 每筆讀數之間稍作延遲，確保ADC穩定
+        delayMicroseconds(100);
+    }
+    
+    // 關閉分壓電路以省電（P0.14 = HIGH）
+    digitalWrite(P0_14, HIGH);
+    
+    // 計算平均值
+    if (validSamples > 0) {
+        return (int16_t)(sum / validSamples);
+    } else {
+        // 如果所有讀數都無效，返回0
+        return 0;
+    }
+}
+
+// ============================================================================
 // 電壓監控與省電管理函數
 // ============================================================================
 void checkVoltageAndSleep() {
@@ -436,7 +495,10 @@ void checkVoltageAndSleep() {
         // - RESULT: 12-bit ADC 值（0-4095）
         // - K: 校準常數（理論值 10.8，但可能需要根據實際硬體調整）
         // 建議：用萬用表測量實際電池電壓，然後調整 K 值以匹配
-        float calibrationConstant = 10.8f;  // 可以根據實際測量值調整
+        // 校準調整：根據當前讀值重新校準
+        // 如果讀到的原始值是 523 (10-bit) → 2092 (12-bit)，實際電壓應該是 4.14V
+        // 計算：4.14 = 2092 * K / 4096，得到 K ≈ 8.11
+        float calibrationConstant = 8.11f;  // 根據當前讀值重新校準（2025-01-24）
         float voltage = (float)voltageRaw * calibrationConstant / 4096.0f;
 
         // 根據電壓調整充電模式

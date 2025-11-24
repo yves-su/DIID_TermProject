@@ -26,6 +26,7 @@ import android.util.Log;
 
 import com.example.smartbadmintonracket.calibration.CalibrationManager;
 import com.example.smartbadmintonracket.chart.ChartManager;
+import com.example.smartbadmintonracket.filter.VoltageFilter;
 import com.github.mikephil.charting.charts.LineChart;
 
 public class MainActivity extends AppCompatActivity {
@@ -33,6 +34,7 @@ public class MainActivity extends AppCompatActivity {
     private BLEManager bleManager;
     private CalibrationManager calibrationManager;
     private ChartManager chartManager;
+    private VoltageFilter voltageFilter;
     private TextView statusText;
     private TextView dataCountText;
     private TextView timestampText;
@@ -50,7 +52,7 @@ public class MainActivity extends AppCompatActivity {
     
     // 權限請求
     private ActivityResultLauncher<String[]> requestPermissionLauncher;
-    
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -71,6 +73,9 @@ public class MainActivity extends AppCompatActivity {
         
         // 初始化校正管理器
         calibrationManager = new CalibrationManager(this);
+        
+        // 初始化電壓濾波器
+        voltageFilter = new VoltageFilter();
         
         // 初始化圖表管理器
         initChartManager();
@@ -207,6 +212,10 @@ public class MainActivity extends AppCompatActivity {
                         statusText.setTextColor(0xFFF44336); // 紅色
                         scanButton.setEnabled(true);
                         disconnectButton.setEnabled(false);
+                        // 重置電壓濾波器
+                        if (voltageFilter != null) {
+                            voltageFilter.reset();
+                        }
                         Toast.makeText(MainActivity.this, "連接已斷開", Toast.LENGTH_SHORT).show();
                     });
                 }
@@ -233,6 +242,11 @@ public class MainActivity extends AppCompatActivity {
             dataCount = 0;
             updateDataCount();
             clearDataDisplay();
+            
+            // 重置電壓濾波器
+            if (voltageFilter != null) {
+                voltageFilter.reset();
+            }
             
             // 停止圖表更新
             if (chartManager != null) {
@@ -375,8 +389,13 @@ public class MainActivity extends AppCompatActivity {
             "角速度 (dps):\nX: %.2f\nY: %.2f\nZ: %.2f",
             data.gyroX, data.gyroY, data.gyroZ));
         
-        // 更新電壓
-        voltageText.setText(String.format(Locale.getDefault(), "電壓: %.2f V", data.voltage));
+        // 更新電壓（使用濾波器平滑讀數）
+        float filteredVoltage = voltageFilter != null 
+            ? voltageFilter.addSample(data.voltage) 
+            : data.voltage;
+        // 顯示濾波後的電壓值（保留 3 位小數以觀察穩定性）
+        voltageText.setText(String.format(Locale.getDefault(), 
+            "電壓: %.3f V (原始: %.3f V)", filteredVoltage, data.voltage));
         
         // 更新最新資料（完整資訊）
         latestDataText.setText(String.format(Locale.getDefault(),

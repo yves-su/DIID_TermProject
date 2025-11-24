@@ -74,8 +74,21 @@ public class IMUDataParser {
             // 理論值：K = 10.8 (假設 GAIN=1/6, REF=0.6V, 分壓比=1/3)
             // 如果讀值偏低，可以增加 K 值；如果讀值偏高，可以減少 K 值
             // 建議：用萬用表測量實際電池電壓，然後調整 K 值以匹配
-            float calibrationConstant = 10.8f;  // 可以根據實際測量值調整
+            // 校準調整：根據實際測量值調整
+            // 如果讀到的原始值是 523 (10-bit) → 2092 (12-bit)，實際電壓應該是 4.14V
+            // 計算：4.14 = 2092 * K / 4096，得到 K ≈ 8.11
+            // 但考慮到之前的校準歷史，使用折中值
+            // 注意：如果電壓讀值異常高（>5V），可能是 USB 供電模式或讀取錯誤
+            float calibrationConstant = 8.11f;  // 根據當前讀值重新校準（2025-01-24）
             float voltage = (float)voltageRaw12bit * calibrationConstant / 4096.0f;
+            
+            // 檢測異常高的電壓值（可能是 USB 供電模式或讀取錯誤）
+            if (voltage > 5.0f) {
+                Log.w(TAG, "電壓讀值異常高: " + voltage + "V，可能是 USB 供電模式或讀取錯誤");
+                // 如果電壓異常高，嘗試使用較小的校準常數重新計算
+                // 或者標記為 USB 供電模式
+                voltage = 0.0f;  // 標記為無效值，讓濾波器處理
+            }
             
             // 只在需要除錯時記錄（避免日誌過多）
             // Log.d(TAG, "電壓計算: voltageRaw=" + voltageRaw + 
