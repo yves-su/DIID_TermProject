@@ -9,7 +9,7 @@
 5. [Mobile BLE Receiver Development Guide](#mobile-ble-receiver-development-guide)
 6. [Mobile App Results Display & UI Design](#mobile-app-results-display--ui-design)
 7. [Pose Calibration Function](#pose-calibration-function)
-8. [WiFi Data Transmission to Server](#wifi-data-transmission-to-server)
+8. [Firebase Data Transmission](#firebase-data-transmission)
 9. [Database Design](#database-design)
 10. [AI Training Data Preparation](#ai-training-data-preparation)
 11. [System Architecture Flowchart](#system-architecture-flowchart)
@@ -20,7 +20,7 @@
 
 ## System Overview
 
-This system is an intelligent badminton racket sensor that uses an IMU (Inertial Measurement Unit) sensor embedded in the racket handle to collect acceleration and angular velocity data in real-time during racket swings. The data is transmitted to a mobile App via BLE (Bluetooth Low Energy), then uploaded to a server database via WiFi, and finally used for AI model training to identify different stroke types.
+This system is an intelligent badminton racket sensor that uses an IMU (Inertial Measurement Unit) sensor embedded in the racket handle to collect acceleration and angular velocity data in real-time during racket swings. The data is transmitted to a mobile App via BLE (Bluetooth Low Energy), then uploaded to Firebase Firestore cloud database, and finally used for AI model training to identify different stroke types.
 
 ### Core Function Flow
 
@@ -80,7 +80,8 @@ Racket Handle Internal Configuration:
 ├── Type-C Interface (Charging)
 ├── Main Board (XIAO nRF52840 Sense)
 │   ├── I2C Connection to LSM6DS3 (SDA, SCL)
-│   ├── A0 Analog Input (Voltage Monitoring)
+│   ├── A0 Analog Input (Voltage Monitoring, P0.31/AIN7)
+│   ├── P0_14 Digital Output (VBAT_ENABLE, controls voltage divider circuit)
 │   └── P0_13 Digital Output (Charging Mode Control)
 └── Battery (501230, 3.7V, 150mAh)
 ```
@@ -157,7 +158,7 @@ Connection Status Check Flow:
 | 16-19 | 4 bytes | `float` | `gyroX` | X-axis angular velocity (unit: dps, calibrated) |
 | 20-23 | 4 bytes | `float` | `gyroY` | Y-axis angular velocity (unit: dps, calibrated) |
 | 24-27 | 4 bytes | `float` | `gyroZ` | Z-axis angular velocity (unit: dps, calibrated) |
-| 28-29 | 2 bytes | `uint16_t` | `voltageRaw` | Raw voltage reading (0-1023, convert using formula: voltageRaw * (3.3 / 1023.0) * 2.0) |
+| 28-29 | 2 bytes | `uint16_t` | `voltageRaw` | Raw voltage reading (10-bit: 0-1023, needs to be converted to 12-bit: 0-4095, using formula: V_BAT = RESULT × 8.11 / 4096) |
 
 ### Data Parsing Example (Python)
 
@@ -185,12 +186,18 @@ def parse_imu_data(data: bytes) -> dict:
     gyroX = struct.unpack('<f', data[16:20])[0]        # float
     gyroY = struct.unpack('<f', data[20:24])[0]        # float
     gyroZ = struct.unpack('<f', data[24:28])[0]        # float
-    voltageRaw = struct.unpack('<H', data[28:30])[0]   # uint16_t (0-1023)
+    voltageRaw = struct.unpack('<H', data[28:30])[0]   # uint16_t (10-bit: 0-1023)
+    
+    # Convert 10-bit to 12-bit (nRF52840 SAADC is actually 12-bit)
+    voltageRaw12bit = voltageRaw
+    if voltageRaw <= 1023:
+        voltageRaw12bit = voltageRaw * 4  # 10-bit to 12-bit
     
     # Calculate actual voltage value
     # Battery: 501230, 3.7V, 150mAh
-    # Formula: voltageRaw * (3.3 / 1023.0) * 2.0 (3.3V reference, 2:1 voltage divider)
-    voltage = voltageRaw * (3.3 / 1023.0) * 2.0
+    # Using nRF52840 SAADC formula: V_BAT = RESULT × K / 4096
+    # Calibration constant K = 8.11 (adjusted based on actual measurements, 2025-01-24)
+    voltage = voltageRaw12bit * 8.11 / 4096.0
     
     return {
         'timestamp': timestamp,        # milliseconds
@@ -233,8 +240,17 @@ function parseIMUData(buffer: ArrayBuffer): IMUData {
     
     // Calculate actual voltage value
     // Battery: 501230, 3.7V, 150mAh
-    // Formula: voltageRaw * (3.3 / 1023.0) * 2.0 (3.3V reference, 2:1 voltage divider)
-    const voltage = voltageRaw * (3.3 / 1023.0) * 2.0;
+    // Using nRF52840 SAADC formula:
+    // V_BAT = RESULT × K / 4096
+    // Where:
+    // - RESULT: 12-bit ADC value (0-4095)
+    // - K: Calibration constant = 8.11 (adjusted based on actual measurements, 2025-01-24)
+    // Note: Arduino analogRead() returns 10-bit (0-1023), needs to be converted to 12-bit
+    let voltageRaw12bit = voltageRaw;
+    if (voltageRaw <= 1023) {
+        voltageRaw12bit = voltageRaw * 4;  // 10-bit to 12-bit
+    }
+    const voltage = voltageRaw12bit * 8.11 / 4096.0;
     
     return {
         timestamp,
@@ -266,18 +282,74 @@ function parseIMUData(buffer: ArrayBuffer): IMUData {
   - Source: Arduino `millis()` function
   - Accumulated from system startup
 
+- **Voltage**:
+  - Unit: `V` (Volts)
+  - Range: 2.5V - 4.5V (Battery 501230, 3.7V, 150mAh)
+  - Reading frequency: Updated every 10 seconds (Arduino side)
+  - Reading method: Read 30 voltage samples and average them each time
+  - Conversion formula: `V_BAT = RESULT × 8.11 / 4096`
+    - RESULT: 12-bit ADC value (0-4095)
+    - Calibration constant: 8.11 (adjusted based on actual measurements, 2025-01-24)
+  - Android side filtering: Dual-layer filter (moving average + EMA) to smooth readings
+
+### Voltage Reading and Filtering Mechanism (Updated 2025-01-24)
+
+#### Arduino Side Voltage Reading
+
+1. **Reading Frequency Optimization**:
+   - Reduced from 50Hz (every 20ms) to once every 10 seconds
+   - Significantly reduces power consumption and extends battery life
+
+2. **Reading Method**:
+   - Use `readVoltageAverage()` function
+   - Read 30 voltage samples each time and calculate average
+   - Enable voltage divider circuit before reading (P0.14 = LOW)
+   - Disable voltage divider circuit immediately after reading (P0.14 = HIGH) to save power
+
+3. **ADC Conversion**:
+   - Arduino `analogRead()` returns 10-bit value (0-1023)
+   - nRF52840 SAADC is actually 12-bit (0-4095)
+   - Conversion formula: `12bit_value = 10bit_value × 4`
+
+4. **Voltage Calculation**:
+   - Use nRF52840 SAADC formula: `V_BAT = RESULT × K / 4096`
+   - Calibration constant K = 8.11 (adjusted based on actual measurements)
+
+#### Android Side Voltage Filtering
+
+1. **Dual-Layer Filter Architecture**:
+   - **First Layer**: Moving Average (100 samples, approximately 2 seconds)
+   - **Second Layer**: Exponential Moving Average (EMA, alpha = 0.15)
+
+2. **Outlier Handling**:
+   - Automatically filter outliers (< 0.1V or > 5.0V)
+   - Detect USB power mode or reading errors
+
+3. **UI Display**:
+   - Display both filtered and raw values simultaneously
+   - Format: `Voltage: X.XXX V (Raw: X.XXX V)`
+
+**Implementation Locations**:
+- Arduino: `src/main/main.ino` - `readVoltageAverage()` function
+- Android: `APP/android/app/src/main/java/com/example/smartbadmintonracket/filter/VoltageFilter.java`
+
 ### IMU Calibration Mechanism
 
-The sensor automatically performs calibration when first connected:
+**Note**: This project uses **manual trigger calibration**, not automatic calibration. Users need to click the "Zero-Point Calibration" button to trigger the calibration process.
 
+**Actual Implementation**:
 1. **Accelerometer Calibration**:
-   - Collect 100 data points to calculate average
+   - Collect 200 data points to calculate average (approximately 4 seconds)
    - Subtract 1g from Z-axis (gravity acceleration)
    - Used to compensate for offset in resting state
 
 2. **Gyroscope Calibration**:
-   - Collect 100 data points to calculate average
+   - Collect 200 data points to calculate average
    - Used as zero-point offset compensation
+
+3. **Calibration Data Storage**:
+   - Stored locally using SharedPreferences + Gson
+   - Calibration values are automatically loaded and applied after app restart
 
 ---
 
@@ -285,7 +357,27 @@ The sensor automatically performs calibration when first connected:
 
 ### Development Environment Recommendations
 
-#### Android (Kotlin/Java)
+#### Android (Java) - Used in This Project
+
+**Project Technology Stack**:
+- **Development Language**: Java
+- **Framework**: Native Android (AndroidX)
+- **Minimum SDK**: API Level 26
+- **Target SDK**: API Level 36
+- **Main Dependencies**:
+  - Android Native BLE API (`android.bluetooth`)
+  - MPAndroidChart v3.1.0 (Chart Display)
+  - Firebase Firestore (Cloud Database)
+  - Gson 2.10.1 (JSON Serialization)
+  - Material Design 3
+
+**Actual Implementation Locations**:
+- `APP/android/app/src/main/java/com/example/smartbadmintonracket/`
+  - `BLEManager.java` - BLE Connection Management
+  - `IMUDataParser.java` - Data Parsing
+  - `MainActivity.java` - Main Activity
+
+#### Android (Kotlin/Java) - General Examples
 
 **Required Permissions (AndroidManifest.xml)**
 ```xml
@@ -320,207 +412,55 @@ dependencies {
 }
 ```
 
-#### Flutter (Dart)
+### Data Buffering and Processing (Android Java Implementation)
 
-**pubspec.yaml Dependencies**
-```yaml
-dependencies:
-  flutter:
-    sdk: flutter
-  
-  # BLE Bluetooth Library
-  flutter_blue_plus: ^1.32.0
-  
-  # HTTP Requests
-  http: ^1.1.0
-  
-  # JSON Processing
-  json_annotation: ^4.8.1
-  
-  # Database (Local Cache)
-  sqflite: ^2.3.0
-  path: ^1.8.3
-```
+Since the data transmission frequency is 50Hz, the actual implementation uses the following methods to manage data:
 
-### BLE Connection Implementation Example (Flutter)
+**Actual Implementation Locations**: `APP/android/app/src/main/java/com/example/smartbadmintonracket/`
 
-```dart
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'dart:typed_data';
-
-class BLEIMUReceiver {
-  // BLE Service and Characteristic UUIDs
-  static const String deviceName = "SmartRacket";
-  static const String serviceUUID = "0769bb8e-b496-4fdd-b53b-87462ff423d0";
-  static const String characteristicUUID = "8ee82f5b-76c7-4170-8f49-fff786257090";
-  
-  BluetoothDevice? connectedDevice;
-  BluetoothCharacteristic? imuCharacteristic;
-  bool isConnected = false;
-  
-  // Data reception callback
-  Function(Map<String, dynamic>)? onDataReceived;
-  
-  // Scan and connect to device
-  Future<bool> scanAndConnect() async {
-    try {
-      print("Starting BLE device scan...");
-      
-      // Start Bluetooth scan
-      await FlutterBluePlus.startScan(timeout: Duration(seconds: 10));
-      
-      // Listen to scan results
-      FlutterBluePlus.scanResults.listen((results) {
-        for (ScanResult result in results) {
-          if (result.device.platformName == deviceName || 
-              result.device.advName == deviceName) {
-            print("Found target device: ${result.device.platformName}");
-            FlutterBluePlus.stopScan();
-            connectToDevice(result.device);
-            break;
-          }
-        }
-      });
-      
-      return true;
-    } catch (e) {
-      print("Scan failed: $e");
-      return false;
-    }
-  }
-  
-  // Connect to device
-  Future<void> connectToDevice(BluetoothDevice device) async {
-    try {
-      print("Connecting to device...");
-      await device.connect(timeout: Duration(seconds: 15));
-      
-      connectedDevice = device;
-      
-      // Monitor connection state
-      device.connectionState.listen((state) {
-        isConnected = (state == BluetoothConnectionState.connected);
-        if (!isConnected) {
-          print("Device disconnected");
-        }
-      });
-      
-      // Discover services
-      List<BluetoothService> services = await device.discoverServices();
-      
-      for (BluetoothService service in services) {
-        if (service.uuid.toString().toLowerCase() == 
-            serviceUUID.toLowerCase().replaceAll('-', '')) {
-          
-          // Find target characteristic
-          for (BluetoothCharacteristic characteristic in service.characteristics) {
-            if (characteristic.uuid.toString().toLowerCase() == 
-                characteristicUUID.toLowerCase().replaceAll('-', '')) {
-              
-              imuCharacteristic = characteristic;
-              
-              // Subscribe to notifications
-              await characteristic.setNotifyValue(true);
-              
-              // Listen to data
-              characteristic.lastValueStream.listen((data) {
-                parseAndHandleData(data);
-              });
-              
-              print("BLE connection successful, starting to receive data");
-              break;
+```java
+// ChartManager.java - Chart data buffering (downsampling)
+public class ChartManager {
+    private static final int MAX_DATA_POINTS = 50;  // 5 seconds * 10Hz = 50 points
+    private static final long UPDATE_INTERVAL_MS = 100;  // Update every 100ms
+    private List<IMUData> dataBuffer = new ArrayList<>();
+    private long lastUpdateTime = 0;
+    
+    public void addDataPoint(IMUData data) {
+        long currentTime = System.currentTimeMillis();
+        
+        // Downsampling: take latest data point every 100ms
+        if (currentTime - lastUpdateTime >= UPDATE_INTERVAL_MS) {
+            dataBuffer.add(data);
+            
+            // Maintain 5 seconds of data (approximately 50 points)
+            if (dataBuffer.size() > MAX_DATA_POINTS) {
+                dataBuffer.remove(0);
             }
-          }
+            
+            lastUpdateTime = currentTime;
+            updateCharts();
         }
-      }
-    } catch (e) {
-      print("Connection failed: $e");
     }
-  }
-  
-  // Parse data and trigger callback
-  void parseAndHandleData(Uint8List data) {
-    if (data.length != 30) {
-      print("Data length error: ${data.length} bytes");
-      return;
-    }
-    
-    // Parse data (Little-Endian)
-    ByteData byteData = data.buffer.asByteData();
-    
-    int timestamp = byteData.getUint32(0, Endian.little);
-    double accelX = byteData.getFloat32(4, Endian.little);
-    double accelY = byteData.getFloat32(8, Endian.little);
-    double accelZ = byteData.getFloat32(12, Endian.little);
-    double gyroX = byteData.getFloat32(16, Endian.little);
-    double gyroY = byteData.getFloat32(20, Endian.little);
-    double gyroZ = byteData.getFloat32(24, Endian.little);
-    int voltageRaw = byteData.getUint16(28, Endian.little);
-    // Calculate actual voltage value
-    // Battery: 501230, 3.7V, 150mAh
-    // Formula: voltageRaw * (3.3 / 1023.0) * 2.0 (3.3V reference, 2:1 voltage divider)
-    double voltage = voltageRaw * (3.3 / 1023.0) * 2.0;
-    
-    Map<String, dynamic> imuData = {
-      'timestamp': timestamp,
-      'accelX': accelX,
-      'accelY': accelY,
-      'accelZ': accelZ,
-      'gyroX': gyroX,
-      'gyroY': gyroY,
-      'gyroZ': gyroZ,
-      'voltage': voltage,
-      'receivedAt': DateTime.now().millisecondsSinceEpoch,
-    };
-    
-    // Trigger callback
-    if (onDataReceived != null) {
-      onDataReceived!(imuData);
-    }
-  }
-  
-  // Disconnect
-  Future<void> disconnect() async {
-    if (connectedDevice != null) {
-      await connectedDevice!.disconnect();
-      connectedDevice = null;
-      imuCharacteristic = null;
-      isConnected = false;
-    }
-  }
 }
-```
 
-### Data Buffering and Processing
-
-Since the data transmission frequency is 50Hz, it is recommended to use a buffer to manage data:
-
-```dart
-class IMUDataBuffer {
-  List<Map<String, dynamic>> buffer = [];
-  static const int bufferSize = 200; // Cache 200 data points (approximately 4 seconds)
-  
-  void addData(Map<String, dynamic> data) {
-    buffer.add(data);
+// FirebaseManager.java - Firebase batch upload buffering
+public class FirebaseManager {
+    private List<IMUData> pendingData = new ArrayList<>();
+    private static final int BATCH_SIZE = 100;  // 100 data points
+    private static final int UPLOAD_INTERVAL_MS = 5000;  // 5 seconds
     
-    // Maintain buffer size
-    if (buffer.length > bufferSize) {
-      buffer.removeAt(0);
+    public void addData(IMUData data) {
+        if (!isRecordingMode) return;
+        
+        pendingData.add(data);
+        
+        // Check upload conditions: 5 seconds or 100 points
+        if (pendingData.size() >= BATCH_SIZE || 
+            (System.currentTimeMillis() - lastUploadTime) >= UPLOAD_INTERVAL_MS) {
+            uploadBatch();
+        }
     }
-  }
-  
-  // Get recent N data points (for AI analysis)
-  List<Map<String, dynamic>> getRecentData(int count) {
-    if (buffer.length < count) {
-      return List.from(buffer);
-    }
-    return buffer.sublist(buffer.length - count);
-  }
-  
-  // Clear buffer
-  void clear() {
-    buffer.clear();
-  }
 }
 ```
 
@@ -611,68 +551,9 @@ This is the main page for demonstrations, recommended design as follows:
 - Add animation effects when displaying results (such as pop-up, fade-in, etc.)
 - Results freeze display for 3-5 seconds to allow users to clearly see recognition results
 
-#### 3. Test Results Detail Page
+#### 3. Test Results Detail Page (To Be Implemented)
 
-Display detailed information for each stroke:
-
-```dart
-class StrokeResultPage extends StatelessWidget {
-  final StrokeResult result;
-  
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text('Stroke Result Details')),
-      body: Column(
-        children: [
-          // Result summary card
-          _buildResultCard(result),
-          
-          // Timeline information
-          _buildTimeline(result),
-          
-          // Detailed data charts
-          _buildDataCharts(result),
-          
-          // Action replay (optional)
-          _buildReplaySection(result),
-        ],
-      ),
-    );
-  }
-  
-  Widget _buildResultCard(StrokeResult result) {
-    return Card(
-      color: _getStrokeColor(result.label),
-      child: Padding(
-        padding: EdgeInsets.all(24.0),
-        child: Column(
-          children: [
-            Text(
-              _getStrokeLabel(result.label),
-              style: TextStyle(
-                fontSize: 48,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
-              ),
-            ),
-            SizedBox(height: 16),
-            Text(
-              'Confidence: ${(result.confidence * 100).toInt()}%',
-              style: TextStyle(fontSize: 24, color: Colors.white70),
-            ),
-            SizedBox(height: 8),
-            Text(
-              'Time: ${_formatTime(result.timestamp)}',
-              style: TextStyle(fontSize: 14, color: Colors.white60),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-```
+Display detailed information for each stroke. This feature is currently not implemented and can be added in the future with a detailed results display page.
 
 #### 4. History Records Page
 
@@ -706,107 +587,57 @@ Since data arrives at 50Hz (every 20ms), but charts update at 10Hz (every 100ms)
 **Chart Implementation (Android - MPAndroidChart)**:
 ```java
 public class ChartManager {
-    private static final int MAX_DATA_POINTS = 50;  // 5 seconds at 10Hz
-    private static final int DOWNSAMPLE_FACTOR = 5;  // 50Hz -> 10Hz
+    private static final int MAX_DATA_POINTS = 50;  // 5 seconds * 10Hz = 50 points
+    private static final long UPDATE_INTERVAL_MS = 100;  // Update every 100ms
+    private List<IMUData> dataBuffer = new ArrayList<>();
+    private long lastUpdateTime = 0;
     
-    private List<IMUData> chartData = new ArrayList<>();
-    private int sampleCounter = 0;
-    
-    public void addData(IMUData data) {
-        sampleCounter++;
+    public void addDataPoint(IMUData data) {
+        long currentTime = System.currentTimeMillis();
         
-        // Downsample: take 1 point every 5 points
-        if (sampleCounter % DOWNSAMPLE_FACTOR == 0) {
-            chartData.add(data);
+        // Downsampling: take latest data point every 100ms
+        if (currentTime - lastUpdateTime >= UPDATE_INTERVAL_MS) {
+            dataBuffer.add(data);
             
-            // Maintain data point limit
-            if (chartData.size() > MAX_DATA_POINTS) {
-                chartData.remove(0);
+            // Maintain 5 seconds of data (approximately 50 points)
+            if (dataBuffer.size() > MAX_DATA_POINTS) {
+                dataBuffer.remove(0);
             }
             
-            // Update charts
+            lastUpdateTime = currentTime;
             updateCharts();
         }
     }
     
     private void updateCharts() {
         // Update all 6 charts with new data
-        accelXChart.updateData(chartData, IMUData::getAccelX);
-        accelYChart.updateData(chartData, IMUData::getAccelY);
-        accelZChart.updateData(chartData, IMUData::getAccelZ);
-        gyroXChart.updateData(chartData, IMUData::getGyroX);
-        gyroYChart.updateData(chartData, IMUData::getGyroY);
-        gyroZChart.updateData(chartData, IMUData::getGyroZ);
+        accelXChart.updateData(dataBuffer, IMUData::getAccelX);
+        accelYChart.updateData(dataBuffer, IMUData::getAccelY);
+        accelZChart.updateData(dataBuffer, IMUData::getAccelZ);
+        gyroXChart.updateData(dataBuffer, IMUData::getGyroX);
+        gyroYChart.updateData(dataBuffer, IMUData::getGyroY);
+        gyroZChart.updateData(dataBuffer, IMUData::getGyroZ);
     }
 }
 ```
 
-**Chart Styling**:
+**Chart Styling (Actual Implementation)**:
 - Each axis uses a different color:
-  - Acceleration X: Red (#F44336)
+  - Acceleration X: Blue (#2196F3)
   - Acceleration Y: Green (#4CAF50)
-  - Acceleration Z: Blue (#2196F3)
+  - Acceleration Z: Purple (#9C27B0)
   - Gyro X: Orange (#FF9800)
-  - Gyro Y: Purple (#9C27B0)
-  - Gyro Z: Teal (#009688)
-- Smooth line curves
+  - Gyro Y: Red (#F44336)
+  - Gyro Z: Cyan (#00BCD4)
+- Cubic Bezier smooth curves
 - Grid lines for readability
 - Axis labels with units
+- Y-axis range: Acceleration ±20g, Gyro ±2500 dps
+- Auto-scale X-axis range (0-5 seconds)
 
-#### 6. Animation Effect Recommendations
+#### 6. Animation Effects (To Be Implemented)
 
-**Recognition Result Pop-up Animation:**
-```dart
-class ResultAnimation extends StatefulWidget {
-  final String label;
-  final double confidence;
-  
-  @override
-  _ResultAnimationState createState() => _ResultAnimationState();
-}
-
-class _ResultAnimationState extends State<ResultAnimation>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _scaleAnimation;
-  late Animation<double> _fadeAnimation;
-  
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: Duration(milliseconds: 500),
-      vsync: this,
-    );
-    
-    _scaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.elasticOut),
-    );
-    
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeIn),
-    );
-    
-    _controller.forward();
-  }
-  
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        return Transform.scale(
-          scale: _scaleAnimation.value,
-          child: Opacity(
-            opacity: _fadeAnimation.value,
-            child: _buildResultCard(),
-          ),
-        );
-      },
-    );
-  }
-}
-```
+Currently, the UI has implemented basic Material Design 3 design. Animation effects can be added in future versions. Future implementations can use Android's `ObjectAnimator` or `ValueAnimator` for result pop-up animations.
 
 ### Display Mode Design
 
@@ -824,18 +655,38 @@ For better demonstration effects, it is recommended to design the following mode
 - Automatically save all results
 - Can replay the test process
 
-### State Management Recommendations
+### State Management (Android Java Implementation)
 
-Use Flutter's state management solution (such as Provider, Riverpod) to manage the following states:
+The actual implementation uses the following methods to manage state:
 
-```dart
-class TestSessionState {
-  bool isConnected = false;
-  bool isRecording = false;
-  List<StrokeResult> results = [];
-  IMUData? currentData;
-  String? currentPrediction;
-  double? currentConfidence;
+```java
+// MainActivity.java - Main state management
+public class MainActivity extends AppCompatActivity {
+    private BLEManager bleManager;
+    private CalibrationManager calibrationManager;
+    private ChartManager chartManager;
+    private FirebaseManager firebaseManager;
+    private VoltageFilter voltageFilter;
+    
+    private boolean isConnected = false;
+    private int dataCount = 0;
+    
+    // State managed through callback interfaces
+    private void setupBLECallbacks() {
+        bleManager.setDataCallback(data -> {
+            // Apply calibration
+            IMUData calibratedData = calibrationManager.applyCalibration(data);
+            
+            // Update charts
+            chartManager.addDataPoint(calibratedData);
+            
+            // Upload to Firebase (if recording mode is enabled)
+            firebaseManager.addData(calibratedData);
+            
+            // Update UI
+            updateDataDisplay(calibratedData);
+        });
+    }
 }
 ```
 
@@ -870,32 +721,40 @@ When the racket is stationary and placed flat:
 
 ### Calibration Flow Design
 
-#### 1. Calibration Mode Trigger
+#### 1. Calibration Mode Trigger (Android Java Implementation)
 
 A "Zero-Point Calibration" button is provided in the main interface:
 
-```dart
-class SettingsPage extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text('Settings')),
-      body: ListView(
-        children: [
-          ListTile(
-            leading: Icon(Icons.tune),
-            title: Text('Calibrate Pose'),
-            subtitle: Text('Calibrate sensor pose to improve recognition accuracy'),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => CalibrationPage()),
-            ),
-          ),
-          // Other settings options...
-        ],
-      ),
-    );
-  }
+**Actual Implementation Location**: `APP/android/app/src/main/java/com/example/smartbadmintonracket/MainActivity.java`
+
+```java
+// MainActivity.java
+private void setupCalibrationButton() {
+    calibrateButton.setOnClickListener(v -> {
+        if (!isConnected) {
+            Toast.makeText(this, "Please connect device first", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        
+        if (calibrationManager.isCalibrating()) {
+            // Cancel calibration
+            calibrationManager.cancelCalibration();
+        } else {
+            // Start calibration
+            showCalibrationDialog();
+        }
+    });
+}
+
+private void showCalibrationDialog() {
+    new android.app.AlertDialog.Builder(this)
+        .setTitle("Zero-Point Calibration")
+        .setMessage("Please place the racket stationary and flat on a flat surface, keep it still.\n\nClick \"Start Calibration\" when ready")
+        .setPositiveButton("Start Calibration", (dialog, which) -> {
+            startCalibration();
+        })
+        .setNegativeButton("Cancel", null)
+        .show();
 }
 ```
 
@@ -918,90 +777,101 @@ class SettingsPage extends StatelessWidget {
 └─────────────────────────────────┘
 ```
 
-**Step 2: Static State Sampling**
-```dart
-class CalibrationPage extends StatefulWidget {
-  @override
-  _CalibrationPageState createState() => _CalibrationPageState();
-}
+**Step 2: Static State Sampling (Android Java Implementation)**
 
-class _CalibrationPageState extends State<CalibrationPage> {
-  List<IMUData> calibrationSamples = [];
-  bool isCalibrating = false;
-  int sampleCount = 0;
-  static const int requiredSamples = 200; // Collect 200 data points (approximately 4 seconds)
-  
-  void startCalibration() {
-    setState(() {
-      isCalibrating = true;
-      sampleCount = 0;
-      calibrationSamples.clear();
-    });
+**Actual Implementation Location**: `APP/android/app/src/main/java/com/example/smartbadmintonracket/calibration/CalibrationManager.java`
+
+```java
+// CalibrationManager.java
+public class CalibrationManager {
+    private static final int REQUIRED_SAMPLES = 200;  // Collect 200 data points (approximately 4 seconds)
+    private List<IMUData> calibrationSamples = new ArrayList<>();
+    private boolean isCalibrating = false;
+    private CalibrationCallback callback;
     
-    // Start collecting data
-    BLEIMUReceiver().onDataReceived = (data) {
-      if (isCalibrating && sampleCount < requiredSamples) {
-        setState(() {
-          calibrationSamples.add(data);
-          sampleCount++;
-        });
+    public void startCalibration(CalibrationCallback callback) {
+        this.callback = callback;
+        isCalibrating = true;
+        calibrationSamples.clear();
+    }
+    
+    public void addCalibrationSample(IMUData data) {
+        if (!isCalibrating) return;
+        
+        calibrationSamples.add(data);
         
         // Update progress
-        if (sampleCount % 10 == 0) {
-          _updateProgress();
+        if (callback != null) {
+            callback.onProgress(calibrationSamples.size(), REQUIRED_SAMPLES);
         }
-      }
-      
-      if (sampleCount >= requiredSamples) {
-        _completeCalibration();
-      }
-    };
-  }
-  
-  void _completeCalibration() {
-    // Calculate calibration parameters
-    CalibrationData calData = _calculateCalibration(calibrationSamples);
+        
+        // Complete calibration
+        if (calibrationSamples.size() >= REQUIRED_SAMPLES) {
+            completeCalibration();
+        }
+    }
     
-    // Save calibration parameters
-    _saveCalibrationData(calData);
+    private void completeCalibration() {
+        // Calculate calibration parameters
+        CalibrationData calData = calculateCalibration(calibrationSamples);
+        
+        // Save calibration parameters
+        storage.saveCalibration(calData);
+        
+        isCalibrating = false;
+        
+        if (callback != null) {
+            callback.onComplete(calData);
+        }
+    }
     
-    setState(() {
-      isCalibrating = false;
-    });
+    private CalibrationData calculateCalibration(List<IMUData> samples) {
+        // Calculate average as offset
+        float sumAX = 0, sumAY = 0, sumAZ = 0;
+        float sumGX = 0, sumGY = 0, sumGZ = 0;
+        
+        for (IMUData data : samples) {
+            sumAX += data.accelX;
+            sumAY += data.accelY;
+            sumAZ += data.accelZ;
+            sumGX += data.gyroX;
+            sumGY += data.gyroY;
+            sumGZ += data.gyroZ;
+        }
+        
+        int count = samples.size();
+        float accelXOffset = sumAX / count;
+        float accelYOffset = sumAY / count;
+        float accelZMean = sumAZ / count;
+        float accelZOffset = accelZMean - 1.0f;  // Z-axis subtract 1g (gravity)
+        
+        float gyroXOffset = sumGX / count;
+        float gyroYOffset = sumGY / count;
+        float gyroZOffset = sumGZ / count;
+        
+        return new CalibrationData(
+            accelXOffset, accelYOffset, accelZOffset,
+            gyroXOffset, gyroYOffset, gyroZOffset
+        );
+    }
     
-    // Show completion message
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('Calibration Complete'),
-        content: Text('Pose calibration completed, will be applied to subsequent stroke recognition'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
-  
-  CalibrationData _calculateCalibration(List<IMUData> samples) {
-    // Calculate average as offset
-    double accelXOffset = samples.map((s) => s.accelX).reduce((a, b) => a + b) / samples.length;
-    double accelYOffset = samples.map((s) => s.accelY).reduce((a, b) => a + b) / samples.length;
-    double accelZMean = samples.map((s) => s.accelZ).reduce((a, b) => a + b) / samples.length;
-    // Z-axis offset: subtract 1g (gravity) from the mean
-    double accelZOffset = accelZMean - 1.0;
-    
-    double gyroXOffset = samples.map((s) => s.gyroX).reduce((a, b) => a + b) / samples.length;
-    double gyroYOffset = samples.map((s) => s.gyroY).reduce((a, b) => a + b) / samples.length;
-    double gyroZOffset = samples.map((s) => s.gyroZ).reduce((a, b) => a + b) / samples.length;
-    
-    return CalibrationData(
-      accelOffset: Offset3D(accelXOffset, accelYOffset, accelZOffset),
-      gyroOffset: Offset3D(gyroXOffset, gyroYOffset, gyroZOffset),
-    );
-  }
+    public IMUData applyCalibration(IMUData rawData) {
+        CalibrationData calData = storage.loadCalibration();
+        if (calData == null) {
+            return rawData;  // Return original data if not calibrated
+        }
+        
+        return new IMUData(
+            rawData.timestamp,
+            rawData.accelX - calData.accelXOffset,
+            rawData.accelY - calData.accelYOffset,
+            rawData.accelZ - calData.accelZOffset,
+            rawData.gyroX - calData.gyroXOffset,
+            rawData.gyroY - calData.gyroYOffset,
+            rawData.gyroZ - calData.gyroZOffset,
+            rawData.voltage
+        );
+    }
 }
 ```
 
@@ -1018,50 +888,39 @@ class _CalibrationPageState extends State<CalibrationPage> {
 └─────────────────────────────────┘
 ```
 
-#### 3. Calibration Data Application
+#### 3. Calibration Data Application (Implemented)
 
-Calibrated data needs to be applied to all received data:
+Calibrated data needs to be applied to all received data. The actual implementation has been completed in `CalibrationManager.java`, see the code example above.
 
-```java
-public class CalibrationManager {
-    private CalibrationData calibrationData;
-    
-    public IMUData applyCalibration(IMUData rawData) {
-        if (calibrationData == null) {
-            return rawData; // Return original data if not calibrated
-        }
-        
-        return new IMUData(
-            rawData.timestamp,
-            rawData.accelX - calibrationData.accelXOffset,
-            rawData.accelY - calibrationData.accelYOffset,
-            rawData.accelZ - calibrationData.accelZOffset,
-            rawData.gyroX - calibrationData.gyroXOffset,
-            rawData.gyroY - calibrationData.gyroYOffset,
-            rawData.gyroZ - calibrationData.gyroZOffset,
-            rawData.voltage
-        );
-    }
-}
-```
+**Application Timing**:
+- All displayed data is calibrated
+- All data uploaded to Firebase is calibrated
+- All chart displayed data is calibrated
 
 **Important Notes**:
 - All displayed data should be calibrated
 - All uploaded data should be calibrated
 - Calibration values are stored locally and persist across app restarts
 
-#### 4. Calibration Data Storage
+#### 4. Calibration Data Storage (Implemented)
 
-Use SharedPreferences to save calibration parameters:
+Use SharedPreferences + Gson to save calibration parameters:
+
+**Actual Implementation Location**: `APP/android/app/src/main/java/com/example/smartbadmintonracket/calibration/CalibrationStorage.java`
 
 ```java
 public class CalibrationStorage {
     private static final String CALIBRATION_KEY = "imu_calibration_data";
     private SharedPreferences prefs;
+    private Gson gson;
+    
+    public CalibrationStorage(Context context) {
+        prefs = context.getSharedPreferences("CalibrationPrefs", Context.MODE_PRIVATE);
+        gson = new Gson();
+    }
     
     public void saveCalibration(CalibrationData data) {
         SharedPreferences.Editor editor = prefs.edit();
-        Gson gson = new Gson();
         String json = gson.toJson(data);
         editor.putString(CALIBRATION_KEY, json);
         editor.apply();
@@ -1071,7 +930,6 @@ public class CalibrationStorage {
         String json = prefs.getString(CALIBRATION_KEY, null);
         if (json == null) return null;
         
-        Gson gson = new Gson();
         return gson.fromJson(json, CalibrationData.class);
     }
     
@@ -1088,30 +946,28 @@ public class CalibrationStorage {
 3. **Regular Calibration**: Recommend calibration when sensor readings seem inaccurate
 4. **Calibration Persistence**: Calibration values are saved locally and persist across app restarts
 
-### Calibration Validation
+### Calibration Validation (To Be Implemented)
 
-After calibration is complete, simple validation can be performed:
+After calibration is complete, simple validation can be performed. In the current implementation, calibration values are directly saved and applied. Validation logic can be added in the future.
 
-```dart
-bool validateCalibration(CalibrationData calData) {
-  // Validate if gravity direction is reasonable
-  double gravityMag = sqrt(
-    pow(calData.gravityDirection.x, 2) +
-    pow(calData.gravityDirection.y, 2) +
-    pow(calData.gravityDirection.z, 2)
-  );
-  
-  // Gravity magnitude should be close to 1g
-  if (gravityMag < 0.8 || gravityMag > 1.2) {
-    return false; // Calibration data abnormal
-  }
-  
-  // Validate if gyroscope offset is within reasonable range
-  if (calData.gyroOffset.magnitude > 50) { // 50 dps
-    return false; // Gyroscope offset too large
-  }
-  
-  return true;
+**Java Implementation Example (To Be Implemented)**:
+```java
+public boolean validateCalibration(CalibrationData calData) {
+    // Validate if accelerometer offset is within reasonable range
+    if (Math.abs(calData.accelXOffset) > 2.0f || 
+        Math.abs(calData.accelYOffset) > 2.0f || 
+        Math.abs(calData.accelZOffset) > 2.0f) {
+        return false; // Accelerometer offset too large
+    }
+    
+    // Validate if gyroscope offset is within reasonable range
+    if (Math.abs(calData.gyroXOffset) > 50.0f || 
+        Math.abs(calData.gyroYOffset) > 50.0f || 
+        Math.abs(calData.gyroZOffset) > 50.0f) {
+        return false; // Gyroscope offset too large
+    }
+    
+    return true;
 }
 ```
 
@@ -1224,89 +1080,9 @@ Data is uploaded when **either** condition is met:
 1. **Time Condition**: 5 seconds have passed since last upload
 2. **Size Condition**: 100 data points have been accumulated
 
-### Offline Data Cache
+### Offline Data Cache (To Be Implemented)
 
-Use local database to store unuploaded data:
-
-```dart
-import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
-
-class LocalDataCache {
-  static Database? _database;
-  
-  Future<Database> get database async {
-    if (_database != null) return _database!;
-    _database = await _initDatabase();
-    return _database!;
-  }
-  
-  Future<Database> _initDatabase() async {
-    String path = join(await getDatabasesPath(), 'imu_data.db');
-    return await openDatabase(
-      path,
-      version: 1,
-      onCreate: (db, version) {
-        return db.execute('''
-          CREATE TABLE imu_data(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id TEXT,
-            timestamp INTEGER,
-            accelX REAL,
-            accelY REAL,
-            accelZ REAL,
-            gyroX REAL,
-            gyroY REAL,
-            gyroZ REAL,
-            voltage REAL,
-            received_at INTEGER,
-            uploaded INTEGER DEFAULT 0
-          )
-        ''');
-      },
-    );
-  }
-  
-  Future<void> insertData(Map<String, dynamic> data) async {
-    final db = await database;
-    await db.insert('imu_data', {
-      'device_id': 'SmartRacket_001',
-      'timestamp': data['timestamp'],
-      'accelX': data['accelX'],
-      'accelY': data['accelY'],
-      'accelZ': data['accelZ'],
-      'gyroX': data['gyroX'],
-      'gyroY': data['gyroY'],
-      'gyroZ': data['gyroZ'],
-      'voltage': data['voltage'],
-      'received_at': data['receivedAt'],
-      'uploaded': 0,
-    });
-  }
-  
-  Future<List<Map<String, dynamic>>> getUnuploadedData() async {
-    final db = await database;
-    return await db.query(
-      'imu_data',
-      where: 'uploaded = ?',
-      whereArgs: [0],
-      orderBy: 'timestamp ASC',
-    );
-  }
-  
-  Future<void> markAsUploaded(List<int> ids) async {
-    final db = await database;
-    for (int id in ids) {
-      await db.update(
-        'imu_data',
-        {'uploaded': 1},
-        where: 'id = ?',
-        whereArgs: [id],
-      );
-    }
-  }
-}
-```
+Currently, when Firebase upload fails, errors are logged in Logcat, but local database storage has not been implemented. Future implementations can consider using Room database for offline caching and retry mechanisms.
 
 ---
 
@@ -1877,21 +1653,26 @@ public class RecognitionManager {
 │   Receiver      │
 │  (BLE Client)   │
 │  - Parse Data   │
-│  - Buffer Mgmt  │
+│  - Calibration  │
+│  - Validate     │
 └────────┬────────┘
          │
          ├─────────────────┐
          │                 │
          ▼                 ▼
 ┌─────────────────┐  ┌─────────────────┐
-│  Local Database │  │   WiFi Upload  │
-│ (SQLite Cache)  │  │   (HTTP/HTTPS) │
+│  Real-time      │  │  Firebase Upload│
+│  Display        │  │  (Firestore)    │
+│  - Value Display│  │  - Batch Upload │
+│  - Chart Display│  │  - Recording Mode│
+│  - Voltage Filter│  │                 │
 └─────────────────┘  └────────┬────────┘
                               │
                               ▼
                       ┌─────────────────┐
-                      │  Server Database│
-                      │ (MySQL/PostgreSQL)
+                      │  Firebase       │
+                      │  Firestore      │
+                      │  (Cloud Database)│
                       └────────┬────────┘
                                │
                                ▼
@@ -1925,18 +1706,19 @@ public class RecognitionManager {
 │  └──────┬───────┘                  │
 │         │                           │
 │  ┌──────▼───────┐                  │
-│  │ Data Buffer  │                  │
-│  │  - Sliding   │                  │
-│  │  - 40 frames │                  │
+│  │ Calibration  │                  │
+│  │  - Zero-Point│                  │
+│  │  - Apply     │                  │
 │  └──────┬───────┘                  │
 │         │                           │
 │  ├──────┴───────┬──────────────────┤
 │  │              │                  │
 │  ▼              ▼                  │
 │  ┌──────────┐  ┌──────────────┐   │
-│  │ AI Infer │  │  Data Upload │   │
-│  │ (TFLite) │  │  - WiFi Up  │   │
-│  │          │  │  - Local Cache│  │
+│  │ Chart     │  │  Firebase    │   │
+│  │ Manager   │  │  - Firestore │   │
+│  │ - Charts  │  │  - Batch Up  │   │
+│  │ - Downsample│ │  - Recording │   │
 │  └──────────┘  └──────────────┘   │
 │                                     │
 └─────────────────────────────────────┘
@@ -2047,10 +1829,10 @@ public class RecognitionManager {
 **Symptom**: Received data that is not 30 bytes
 
 **Solution**:
-```dart
+```java
 if (data.length != 30) {
-  print("Warning: Received data with abnormal length ${data.length} bytes");
-  return; // Skip this data point
+    Log.w(TAG, "Warning: Received data with abnormal length " + data.length + " bytes");
+    return; // Skip this data point
 }
 ```
 
@@ -2059,23 +1841,23 @@ if (data.length != 30) {
 **Symptom**: Acceleration or angular velocity values exceed reasonable range
 
 **Solution**:
-```dart
-bool validateData(Map<String, dynamic> data) {
-  // Acceleration range: -16g ~ +16g
-  if (data['accelX'].abs() > 16 || 
-      data['accelY'].abs() > 16 || 
-      data['accelZ'].abs() > 16) {
-    return false;
-  }
-  
-  // Angular velocity range: -2000 ~ +2000 dps
-  if (data['gyroX'].abs() > 2000 || 
-      data['gyroY'].abs() > 2000 || 
-      data['gyroZ'].abs() > 2000) {
-    return false;
-  }
-  
-  return true;
+```java
+public boolean validateData(IMUData data) {
+    // Acceleration range: -20g ~ +20g (relaxed range)
+    if (Math.abs(data.accelX) > 20.0f || 
+        Math.abs(data.accelY) > 20.0f || 
+        Math.abs(data.accelZ) > 20.0f) {
+        return false;
+    }
+    
+    // Angular velocity range: -2500 ~ +2500 dps (relaxed range)
+    if (Math.abs(data.gyroX) > 2500.0f || 
+        Math.abs(data.gyroY) > 2500.0f || 
+        Math.abs(data.gyroZ) > 2500.0f) {
+        return false;
+    }
+    
+    return true;
 }
 ```
 
@@ -2115,12 +1897,22 @@ bool validateData(Map<String, dynamic> data) {
 
 - [Seeed XIAO nRF52840 Sense Documentation](https://wiki.seeedstudio.com/XIAO_BLE/)
 - [ArduinoBLE Library Documentation](https://www.arduino.cc/reference/en/libraries/arduinoble/)
-- [Flutter Blue Plus Documentation](https://pub.dev/packages/flutter_blue_plus)
+- [Android BLE Official Documentation](https://developer.android.com/guide/topics/connectivity/bluetooth/ble-overview)
+- [MPAndroidChart Documentation](https://github.com/PhilJay/MPAndroidChart)
+- [Firebase Firestore Android Documentation](https://firebase.google.com/docs/firestore/quickstart)
 - [BLE Specification Documentation](https://www.bluetooth.com/specifications/specs/core-specification/)
 
 ### Example Code Locations
 
 - **Arduino Main Program**: `src/main/main.ino`
+- **Android App Main Program**: `APP/android/app/src/main/java/com/example/smartbadmintonracket/`
+  - `MainActivity.java` - Main Activity
+  - `BLEManager.java` - BLE Connection Management
+  - `IMUDataParser.java` - Data Parsing
+  - `CalibrationManager.java` - Zero-Point Calibration
+  - `ChartManager.java` - Chart Management
+  - `FirebaseManager.java` - Firebase Upload
+  - `VoltageFilter.java` - Voltage Filtering
 - **Windows Receiver Program**: `APP/windows/visualizer/ble_imu_receiver.py`
 - **Past Project Examples**: `examples/Past_Student_Projects/codes/`
 
@@ -2131,7 +1923,7 @@ bool validateData(Map<String, dynamic> data) {
   - iOS: LightBlue
 - **Data Visualization**: 
   - Python: Matplotlib, Plotly
-  - Flutter: fl_chart
+  - Android: MPAndroidChart v3.1.0
 - **API Testing**: Postman, curl
 
 ---
@@ -2142,13 +1934,17 @@ For technical issues, please contact the project team or refer to the project RE
 
 ---
 
-**Document Version**: v1.2  
-**Last Updated**: November 2024  
+**Document Version**: v1.3  
+**Last Updated**: January 2025  
 **Maintainer**: DIID Term Project Team  
 **Update Content**: 
-- Added Mobile App Result Display and UI Design chapter
-- Updated Zero-Point Calibration Function chapter (Android implementation)
-- Added Chart Visualization specifications (6 independent charts, 100ms update)
-- Updated Firebase Data Transmission chapter (batch upload, recording mode)
-- Added Remote AI Recognition chapter (5 stroke types, smash speed calculation)
-- Updated System Overview to include all core features  
+- ✅ Updated System Overview: WiFi → Firebase Firestore
+- ✅ Removed all Flutter/Dart related content, only Android (Java) implementation retained
+- ✅ Updated Zero-Point Calibration: Manual trigger, collect 200 data points, use SharedPreferences + Gson storage
+- ✅ Updated Chart Visualization: MPAndroidChart implementation, 6 independent charts, 50Hz → 10Hz downsampling
+- ✅ Updated Firebase Data Transmission: Batch upload (5 seconds or 100 points), recording mode toggle
+- ✅ Updated Voltage Related Technology: Calibration constant 8.11, reading frequency every 10 seconds, 30 samples average, dual-layer filter
+- ✅ Updated Data Parsing Examples: 10-bit to 12-bit conversion, correct voltage calculation formula
+- ✅ Updated UI Design: Material Design 3, status cards, control button cards
+- ✅ Updated State Management: Java implementation examples
+- ✅ Updated System Architecture Flowchart: Reflect actual implementation  

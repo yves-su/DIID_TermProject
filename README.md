@@ -126,51 +126,65 @@ void checkVoltageAndSleep() {
 
 ### 技術棧
 
-- **框架**: Flutter 3.29.3
-- **Dart版本**: 3.7.2
-- **Android SDK**: API Level 35
-- **主要套件**:
-  - `flutter_blue_plus`: 藍牙連接
-  - `firebase_core`, `firebase_database`, `cloud_firestore`: 雲端資料庫
-  - `fl_chart`: 圖表顯示
-  - `tflite_flutter`: TensorFlow Lite模型
+- **開發語言**: Java
+- **框架**: 原生 Android (AndroidX)
+- **最低 SDK**: API Level 26 (Android 8.0)
+- **目標 SDK**: API Level 36 (Android 14)
+- **編譯 SDK**: API Level 36
+- **主要依賴**:
+  - `androidx.appcompat:appcompat`: UI 支援
+  - `com.google.android.material:material`: Material Design 3
+  - `com.google.code.gson:gson:2.10.1`: JSON 序列化（校正資料儲存）
+  - `com.github.PhilJay:MPAndroidChart:v3.1.0`: 圖表顯示
+  - `com.google.firebase:firebase-firestore`: 雲端資料庫
+  - Android 原生 BLE API (`android.bluetooth`): 藍牙連接
 
 ### 主要功能
 
 #### 1. BLE連線管理
-- 自動掃描SmartRacket設備
-- 設備名稱優先排序
-- 連線狀態監控
+- 自動掃描 SmartRacket 設備
+- 連接狀態監控（已連接/未連接/連接中）
+- 自動重連機制
+- 連接狀態視覺指示器
 
-#### 2. 即時資料顯示
-- 六軸感測器資料的即時波形圖
-- 資料緩衝區管理
-- 視覺化資料呈現
+#### 2. 零點校正功能
+- 手動觸發校正（收集 200 筆資料）
+- 自動計算偏移量（加速度計和陀螺儀）
+- 校正資料本地儲存（SharedPreferences + Gson）
+- 自動應用校正到所有顯示資料
 
-#### 3. AI姿勢識別
-- 40筆資料滑動窗口分析
-- 即時CNN模型推理
-- 姿勢分類結果顯示（drive、smash、other）
-- 結果凍結3秒顯示
+#### 3. 即時資料顯示
+- 六軸感測器資料的即時數值顯示
+- 六軸即時曲線圖（MPAndroidChart）
+  - 資料降採樣：50Hz → 10Hz
+  - 時間窗口：最近 5 秒（約 50 個資料點）
+  - 平滑滾動更新
+- 電壓監控與雙層濾波（移動平均 + EMA）
 
 #### 4. 雲端資料同步
-- Firebase Firestore資料上傳
-- 資料結構化管理
-- 離線資料緩存
+- Firebase Firestore 批次上傳
+- 錄製模式切換（開始/停止錄製）
+- 上傳觸發條件：每 5 秒或累積 100 筆資料
+- Session ID 自動生成
 
 ### App架構
 
 ```
-lib/
-├── pages/
-│   └── ble_scan_page.dart          # BLE掃描頁面
-├── components/
-│   ├── ble_data_manager.dart       # BLE資料管理
-│   ├── ble_data_receiver_page.dart # 資料接收頁面
-│   ├── line_page.dart              # 圖表顯示頁面
-│   └── ble_data_posture.dart       # 姿勢識別頁面
-└── assets/
-    └── badminton_model.tflite      # AI模型檔案
+APP/android/app/src/main/java/com/example/smartbadmintonracket/
+├── MainActivity.java                    # 主活動（UI 和流程控制）
+├── BLEManager.java                      # BLE 連接管理
+├── IMUData.java                         # IMU 資料模型
+├── IMUDataParser.java                   # 資料解析和驗證
+├── calibration/
+│   ├── CalibrationManager.java          # 校正管理器
+│   ├── CalibrationData.java             # 校正資料模型
+│   └── CalibrationStorage.java          # 校正資料儲存
+├── chart/
+│   └── ChartManager.java                # 圖表管理器（MPAndroidChart）
+├── filter/
+│   └── VoltageFilter.java               # 電壓濾波器（移動平均 + EMA）
+└── firebase/
+    └── FirebaseManager.java             # Firebase 資料上傳管理
 ```
 
 ## 🤖 AI模型設計
@@ -296,11 +310,12 @@ DIID_TermProject/
 
 ### 4. 手機App設定
 
-1. 安裝Flutter開發環境
-2. 下載並解壓縮`examples/Past_Student_Projects/codes/APP/iot_imu_ble-main.zip`
-3. 設定Firebase專案
-4. 將`badminton_model.tflite`放入assets資料夾
-5. 編譯並安裝到手機
+1. 安裝 Android Studio
+2. 開啟 `APP/android` 目錄
+3. 設定 Firebase 專案（參考 `APP/android/Firebase_設定步驟.md`）
+4. 將 `google-services.json` 放入 `APP/android/app/` 目錄
+5. 同步 Gradle 依賴
+6. 編譯並安裝到手機
 
 ### 5. 使用方式
 
@@ -323,10 +338,11 @@ DIID_TermProject/
 ### 軟體規格
 
 - **Arduino版本**: 1.8.19+
-- **Flutter版本**: 3.29.3
-- **Android API**: 35
+- **Android開發**: 原生 Java + AndroidX
+- **Android API**: 最低 26，目標 36
 - **Firebase**: Cloud Firestore
-- **AI模型**: TensorFlow Lite
+- **圖表庫**: MPAndroidChart v3.1.0
+- **Material Design**: Material Design 3
 
 ## 📈 專案成果
 
@@ -335,7 +351,7 @@ DIID_TermProject/
 1. **硬體整合**: 無縫整合到球拍手柄，不影響使用體驗
 2. **即時性**: 20ms資料更新頻率，滿足即時分析需求
 3. **AI準確性**: CNN模型專門針對IMU資料優化
-4. **用戶體驗**: Flutter App提供直觀的資料視覺化
+4. **用戶體驗**: 原生 Android App 提供直觀的資料視覺化（Material Design 3）
 5. **雲端整合**: Firebase提供完整的資料管理方案
 
 ### 技術亮點
@@ -372,16 +388,18 @@ DIID_TermProject/
 
 - [Seeed XIAO nRF52840 Sense官方文件](https://wiki.seeedstudio.com/XIAO_BLE/)
 - [ArduinoBLE函式庫文件](https://www.arduino.cc/reference/en/libraries/arduinoble/)
-- [Flutter官方文件](https://flutter.dev/docs)
+- [Android開發者官方文件](https://developer.android.com/)
+- [Material Design 3指南](https://m3.material.io/)
 - [TensorFlow Lite文件](https://www.tensorflow.org/lite)
 
 ## 👥 專案團隊
 
-- **硬體設計**: 歐育成、楊梓暄
-- **Arduino程式**: 許少麒
-- **手機App開發**: 李東霖、許少麒
-- **AI模型設計**: 楊梓暄、許少麒
-- **資料標記**: 楊梓暄
+- **硬體設計**: 蘇昱彰、張羿軒
+- **Arduino程式**: 蘇昱彰、張羿軒
+- **手機App開發**: 許俊瑋
+- **AI模型設計**: 江詠翔、費哈蘇
+- **UI設計**:李昊恆
+- **資料收集＆標記**: 巫誌騰
 
 ## 📄 授權
 

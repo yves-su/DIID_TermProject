@@ -9,7 +9,7 @@
 5. [手機端藍芽接收程式開發指南](#手機端藍芽接收程式開發指南)
 6. [手機App結果展示與UI設計](#手機app結果展示與ui設計)
 7. [姿態校正功能](#姿態校正功能)
-8. [WiFi 資料傳輸至伺服器](#wifi-資料傳輸至伺服器)
+8. [Firebase 資料傳輸](#firebase-資料傳輸)
 9. [資料庫設計](#資料庫設計)
 10. [AI 訓練資料準備](#ai-訓練資料準備)
 11. [系統架構流程圖](#系統架構流程圖)
@@ -20,7 +20,7 @@
 
 ## 系統概述
 
-本系統是一個智能羽毛球拍感測器，透過內嵌於球拍手柄的 IMU（慣性測量單元）感測器，即時採集球拍揮動時的加速度和角速度資料，透過 BLE（藍牙低功耗）傳輸至手機 App，再經由 WiFi 上傳至伺服器資料庫，最後用於 AI 模型訓練，以識別不同的球路。
+本系統是一個智能羽毛球拍感測器，透過內嵌於球拍手柄的 IMU（慣性測量單元）感測器，即時採集球拍揮動時的加速度和角速度資料，透過 BLE（藍牙低功耗）傳輸至手機 App，再經由 Firebase Firestore 上傳至雲端資料庫，最後用於 AI 模型訓練，以識別不同的球路。
 
 ### 核心功能流程
 
@@ -80,7 +80,8 @@ Android 手機 App 提供以下核心功能：
 ├── Type-C接口（充電）
 ├── 主控板 (XIAO nRF52840 Sense)
 │   ├── I2C 連接 LSM6DS3 (SDA, SCL)
-│   ├── A0 類比輸入（電壓監控）
+│   ├── A0 類比輸入（電壓監控，P0.31/AIN7）
+│   ├── P0_14 數位輸出（VBAT_ENABLE，控制分壓電路）
 │   └── P0_13 數位輸出（充電模式控制）
 └── 電池 (501230, 3.7V, 150mAh)
 ```
@@ -281,18 +282,74 @@ function parseIMUData(buffer: ArrayBuffer): IMUData {
   - 來源：Arduino `millis()` 函數
   - 從系統啟動開始累計
 
+- **電壓 (Voltage)**:
+  - 單位：`V`（伏特）
+  - 範圍：2.5V - 4.5V（電池 501230, 3.7V, 150mAh）
+  - 讀取頻率：每 10 秒更新一次（Arduino 端）
+  - 讀取方式：每次讀取 30 筆電壓值並取平均
+  - 轉換公式：`V_BAT = RESULT × 8.11 / 4096`
+    - RESULT：12-bit ADC 值（0-4095）
+    - 校準常數：8.11（根據實際測量值調整，2025-01-24）
+  - Android 端濾波：雙層濾波器（移動平均 + EMA）平滑讀數
+
+### 電壓讀取與濾波機制（2025-01-24 更新）
+
+#### Arduino 端電壓讀取
+
+1. **讀取頻率優化**：
+   - 從 50Hz（每 20ms）降低到每 10 秒一次
+   - 大幅降低功耗，延長電池使用時間
+
+2. **讀取方式**：
+   - 使用 `readVoltageAverage()` 函數
+   - 每次讀取 30 筆電壓值並計算平均值
+   - 讀取前啟用分壓電路（P0.14 = LOW）
+   - 讀取完畢立即關閉分壓電路（P0.14 = HIGH）以省電
+
+3. **ADC 轉換**：
+   - Arduino `analogRead()` 返回 10-bit 值（0-1023）
+   - nRF52840 SAADC 實際是 12-bit（0-4095）
+   - 轉換公式：`12bit_value = 10bit_value × 4`
+
+4. **電壓計算**：
+   - 使用 nRF52840 SAADC 公式：`V_BAT = RESULT × K / 4096`
+   - 校準常數 K = 8.11（根據實際測量值調整）
+
+#### Android 端電壓濾波
+
+1. **雙層濾波架構**：
+   - **第一層**：移動平均（100 個樣本，約 2 秒）
+   - **第二層**：指數移動平均（EMA，alpha = 0.15）
+
+2. **異常值處理**：
+   - 自動過濾異常值（< 0.1V 或 > 5.0V）
+   - 檢測 USB 供電模式或讀取錯誤
+
+3. **UI 顯示**：
+   - 同時顯示濾波後的值和原始值
+   - 格式：`電壓: X.XXX V (原始: X.XXX V)`
+
+**實際實現位置**：
+- Arduino：`src/main/main.ino` - `readVoltageAverage()` 函數
+- Android：`APP/android/app/src/main/java/com/example/smartbadmintonracket/filter/VoltageFilter.java`
+
 ### IMU 校正機制
 
-感測器在首次連接時會自動進行校正：
+**注意**：本專案使用**手動觸發校正**，而非自動校正。使用者需要點擊「零點校正」按鈕來觸發校正流程。
 
+**實際實現**：
 1. **加速度計校正**：
-   - 收集 100 筆資料計算平均值
+   - 收集 200 筆資料計算平均值（約 4 秒）
    - Z軸減去 1g（重力加速度）
    - 用於補償靜止狀態下的偏移
 
 2. **陀螺儀校正**：
-   - 收集 100 筆資料計算平均值
+   - 收集 200 筆資料計算平均值
    - 作為零點偏移補償
+
+3. **校正資料儲存**：
+   - 使用 SharedPreferences + Gson 儲存在本地
+   - App 重啟後自動載入並應用校正值
 
 ---
 
@@ -300,7 +357,27 @@ function parseIMUData(buffer: ArrayBuffer): IMUData {
 
 ### 開發環境建議
 
-#### Android (Kotlin/Java)
+#### Android (Java) - 本專案使用
+
+**專案技術棧**：
+- **開發語言**: Java
+- **框架**: 原生 Android (AndroidX)
+- **最低 SDK**: API Level 26
+- **目標 SDK**: API Level 36
+- **主要依賴**:
+  - Android 原生 BLE API (`android.bluetooth`)
+  - MPAndroidChart v3.1.0（圖表顯示）
+  - Firebase Firestore（雲端資料庫）
+  - Gson 2.10.1（JSON 序列化）
+  - Material Design 3
+
+**實際實現位置**：
+- `APP/android/app/src/main/java/com/example/smartbadmintonracket/`
+  - `BLEManager.java` - BLE 連接管理
+  - `IMUDataParser.java` - 資料解析
+  - `MainActivity.java` - 主活動
+
+#### Android (Kotlin/Java) - 通用範例
 
 **必要權限 (AndroidManifest.xml)**
 ```xml
@@ -335,209 +412,58 @@ dependencies {
 }
 ```
 
-#### Flutter (Dart)
+### 資料緩衝與處理（Android Java 實現）
 
-**pubspec.yaml 依賴**
-```yaml
-dependencies:
-  flutter:
-    sdk: flutter
-  
-  # BLE 藍牙庫
-  flutter_blue_plus: ^1.32.0
-  
-  # HTTP 請求
-  http: ^1.1.0
-  
-  # JSON 處理
-  json_annotation: ^4.8.1
-  
-  # 資料庫（本地緩存）
-  sqflite: ^2.3.0
-  path: ^1.8.3
-```
+由於資料傳輸頻率為 50Hz，實際實現使用以下方式管理資料：
 
-### BLE 連接實現範例（Flutter）
+**實際實現位置**：`APP/android/app/src/main/java/com/example/smartbadmintonracket/`
 
-```dart
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'dart:typed_data';
-
-class BLEIMUReceiver {
-  // BLE 服務和特徵 UUID
-  static const String deviceName = "SmartRacket";
-  static const String serviceUUID = "0769bb8e-b496-4fdd-b53b-87462ff423d0";
-  static const String characteristicUUID = "8ee82f5b-76c7-4170-8f49-fff786257090";
-  
-  BluetoothDevice? connectedDevice;
-  BluetoothCharacteristic? imuCharacteristic;
-  bool isConnected = false;
-  
-  // 資料接收回調
-  Function(Map<String, dynamic>)? onDataReceived;
-  
-  // 掃描並連接設備
-  Future<bool> scanAndConnect() async {
-    try {
-      print("開始掃描BLE設備...");
-      
-      // 啟動藍牙掃描
-      await FlutterBluePlus.startScan(timeout: Duration(seconds: 10));
-      
-      // 監聽掃描結果
-      FlutterBluePlus.scanResults.listen((results) {
-        for (ScanResult result in results) {
-          if (result.device.platformName == deviceName || 
-              result.device.advName == deviceName) {
-            print("找到目標設備: ${result.device.platformName}");
-            FlutterBluePlus.stopScan();
-            connectToDevice(result.device);
-            break;
-          }
-        }
-      });
-      
-      return true;
-    } catch (e) {
-      print("掃描失敗: $e");
-      return false;
-    }
-  }
-  
-  // 連接到設備
-  Future<void> connectToDevice(BluetoothDevice device) async {
-    try {
-      print("正在連接設備...");
-      await device.connect(timeout: Duration(seconds: 15));
-      
-      connectedDevice = device;
-      
-      // 監聽連接狀態
-      device.connectionState.listen((state) {
-        isConnected = (state == BluetoothConnectionState.connected);
-        if (!isConnected) {
-          print("設備已斷線");
-        }
-      });
-      
-      // 發現服務
-      List<BluetoothService> services = await device.discoverServices();
-      
-      for (BluetoothService service in services) {
-        if (service.uuid.toString().toLowerCase() == 
-            serviceUUID.toLowerCase().replaceAll('-', '')) {
-          
-          // 找到目標特徵
-          for (BluetoothCharacteristic characteristic in service.characteristics) {
-            if (characteristic.uuid.toString().toLowerCase() == 
-                characteristicUUID.toLowerCase().replaceAll('-', '')) {
-              
-              imuCharacteristic = characteristic;
-              
-              // 訂閱通知
-              await characteristic.setNotifyValue(true);
-              
-              // 監聽資料
-              characteristic.lastValueStream.listen((data) {
-                parseAndHandleData(data);
-              });
-              
-              print("BLE連接成功，開始接收資料");
-              break;
+```java
+// ChartManager.java - 圖表資料緩衝（降採樣）
+public class ChartManager {
+    private static final int MAX_DATA_POINTS = 50;  // 5秒 * 10Hz = 50點
+    private static final long UPDATE_INTERVAL_MS = 100;  // 每100ms更新一次
+    private List<IMUData> dataBuffer = new ArrayList<>();
+    private long lastUpdateTime = 0;
+    
+    public void addDataPoint(IMUData data) {
+        long currentTime = System.currentTimeMillis();
+        
+        // 降採樣：每100ms取最新一筆資料
+        if (currentTime - lastUpdateTime >= UPDATE_INTERVAL_MS) {
+            dataBuffer.add(data);
+            
+            // 維持5秒的資料（約50個點）
+            if (dataBuffer.size() > MAX_DATA_POINTS) {
+                dataBuffer.remove(0);
             }
-          }
+            
+            lastUpdateTime = currentTime;
+            updateCharts();
         }
-      }
-    } catch (e) {
-      print("連接失敗: $e");
     }
-  }
-  
-  // 解析資料並觸發回調
-  void parseAndHandleData(Uint8List data) {
-    if (data.length != 30) {
-      print("資料長度錯誤: ${data.length} bytes");
-      return;
+}
+
+// FirebaseManager.java - Firebase 批次上傳緩衝
+public class FirebaseManager {
+    private List<IMUData> pendingData = new ArrayList<>();
+    private static final int BATCH_SIZE = 100;  // 100筆資料
+    private static final int UPLOAD_INTERVAL_MS = 5000;  // 5秒
+    
+    public void addData(IMUData data) {
+        if (!isRecordingMode) return;
+        
+        pendingData.add(data);
+        
+        // 檢查上傳條件：5秒或100筆
+        if (pendingData.size() >= BATCH_SIZE || 
+            (System.currentTimeMillis() - lastUploadTime) >= UPLOAD_INTERVAL_MS) {
+            uploadBatch();
+        }
     }
-    
-    // 解析資料（Little-Endian）
-    ByteData byteData = data.buffer.asByteData();
-    
-    int timestamp = byteData.getUint32(0, Endian.little);
-    double accelX = byteData.getFloat32(4, Endian.little);
-    double accelY = byteData.getFloat32(8, Endian.little);
-    double accelZ = byteData.getFloat32(12, Endian.little);
-    double gyroX = byteData.getFloat32(16, Endian.little);
-    double gyroY = byteData.getFloat32(20, Endian.little);
-    double gyroZ = byteData.getFloat32(24, Endian.little);
-    int voltageRaw = byteData.getUint16(28, Endian.little);
-    // 計算實際電壓值
-    // 電池：501230, 3.7V, 150mAh
-    // 公式：voltageRaw * (3.3 / 1023.0) * 2.0 (3.3V參考電壓，2:1分壓比)
-    double voltage = voltageRaw * (3.3 / 1023.0) * 2.0;
-    
-    Map<String, dynamic> imuData = {
-      'timestamp': timestamp,
-      'accelX': accelX,
-      'accelY': accelY,
-      'accelZ': accelZ,
-      'gyroX': gyroX,
-      'gyroY': gyroY,
-      'gyroZ': gyroZ,
-      'voltage': voltage,
-      'receivedAt': DateTime.now().millisecondsSinceEpoch,
-    };
-    
-    // 觸發回調
-    if (onDataReceived != null) {
-      onDataReceived!(imuData);
-    }
-  }
-  
-  // 斷開連接
-  Future<void> disconnect() async {
-    if (connectedDevice != null) {
-      await connectedDevice!.disconnect();
-      connectedDevice = null;
-      imuCharacteristic = null;
-      isConnected = false;
-    }
-  }
 }
 ```
 
-### 資料緩衝與處理
-
-由於資料傳輸頻率為 50Hz，建議使用緩衝區管理資料：
-
-```dart
-class IMUDataBuffer {
-  List<Map<String, dynamic>> buffer = [];
-  static const int bufferSize = 200; // 緩存200筆資料（約4秒）
-  
-  void addData(Map<String, dynamic> data) {
-    buffer.add(data);
-    
-    // 保持緩衝區大小
-    if (buffer.length > bufferSize) {
-      buffer.removeAt(0);
-    }
-  }
-  
-  // 取得最近N筆資料（用於AI分析）
-  List<Map<String, dynamic>> getRecentData(int count) {
-    if (buffer.length < count) {
-      return List.from(buffer);
-    }
-    return buffer.sublist(buffer.length - count);
-  }
-  
-  // 清空緩衝區
-  void clear() {
-    buffer.clear();
-  }
-}
-```
 
 ---
 
@@ -625,68 +551,9 @@ class IMUDataBuffer {
 - 結果顯示時加入動畫效果（如彈出、淡入等）
 - 結果凍結顯示3-5秒，讓使用者清楚看到識別結果
 
-#### 3. 測試結果詳細頁面
+#### 3. 測試結果詳細頁面（待實作）
 
-展示每次揮拍的詳細資訊：
-
-```dart
-class StrokeResultPage extends StatelessWidget {
-  final StrokeResult result;
-  
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text('揮拍結果詳情')),
-      body: Column(
-        children: [
-          // 結果摘要卡片
-          _buildResultCard(result),
-          
-          // 時間軸資訊
-          _buildTimeline(result),
-          
-          // 詳細數據圖表
-          _buildDataCharts(result),
-          
-          // 動作回放（可選）
-          _buildReplaySection(result),
-        ],
-      ),
-    );
-  }
-  
-  Widget _buildResultCard(StrokeResult result) {
-    return Card(
-      color: _getStrokeColor(result.label),
-      child: Padding(
-        padding: EdgeInsets.all(24.0),
-        child: Column(
-          children: [
-            Text(
-              _getStrokeLabel(result.label),
-              style: TextStyle(
-                fontSize: 48,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
-              ),
-            ),
-            SizedBox(height: 16),
-            Text(
-              '信心度: ${(result.confidence * 100).toInt()}%',
-              style: TextStyle(fontSize: 24, color: Colors.white70),
-            ),
-            SizedBox(height: 8),
-            Text(
-              '時間: ${_formatTime(result.timestamp)}',
-              style: TextStyle(fontSize: 14, color: Colors.white60),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-```
+展示每次揮拍的詳細資訊。此功能目前尚未實現，未來可添加詳細的結果展示頁面。
 
 #### 4. 歷史記錄頁面
 
@@ -755,72 +622,23 @@ public class ChartManager {
 }
 ```
 
-**圖表樣式**：
+**圖表樣式（實際實現）**：
 - 每個軸使用不同顏色：
-  - 加速度 X：紅色（#F44336）
+  - 加速度 X：藍色（#2196F3）
   - 加速度 Y：綠色（#4CAF50）
-  - 加速度 Z：藍色（#2196F3）
+  - 加速度 Z：紫色（#9C27B0）
   - 角速度 X：橙色（#FF9800）
-  - 角速度 Y：紫色（#9C27B0）
-  - 角速度 Z：青色（#009688）
-- 平滑曲線
+  - 角速度 Y：紅色（#F44336）
+  - 角速度 Z：青色（#00BCD4）
+- Cubic Bezier 平滑曲線
 - 網格線以提高可讀性
 - 軸標籤和單位
+- Y 軸範圍：加速度 ±20g，角速度 ±2500 dps
+- 自動縮放 X 軸範圍（0-5秒）
 
-#### 6. 動畫效果建議
+#### 6. 動畫效果（待實作）
 
-**識別結果彈出動畫：**
-```dart
-class ResultAnimation extends StatefulWidget {
-  final String label;
-  final double confidence;
-  
-  @override
-  _ResultAnimationState createState() => _ResultAnimationState();
-}
-
-class _ResultAnimationState extends State<ResultAnimation>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _scaleAnimation;
-  late Animation<double> _fadeAnimation;
-  
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: Duration(milliseconds: 500),
-      vsync: this,
-    );
-    
-    _scaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.elasticOut),
-    );
-    
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeIn),
-    );
-    
-    _controller.forward();
-  }
-  
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        return Transform.scale(
-          scale: _scaleAnimation.value,
-          child: Opacity(
-            opacity: _fadeAnimation.value,
-            child: _buildResultCard(),
-          ),
-        );
-      },
-    );
-  }
-}
-```
+目前 UI 已實現基本的 Material Design 3 設計，動畫效果可在後續版本中添加。未來可使用 Android 的 `ObjectAnimator` 或 `ValueAnimator` 實現結果彈出動畫。
 
 ### 展示模式設計
 
@@ -838,20 +656,41 @@ class _ResultAnimationState extends State<ResultAnimation>
 - 自動保存所有結果
 - 可以回放測試過程
 
-### 狀態管理建議
+### 狀態管理（Android Java 實現）
 
-使用Flutter的狀態管理方案（如Provider、Riverpod）管理以下狀態：
+實際實現使用以下方式管理狀態：
 
-```dart
-class TestSessionState {
-  bool isConnected = false;
-  bool isRecording = false;
-  List<StrokeResult> results = [];
-  IMUData? currentData;
-  String? currentPrediction;
-  double? currentConfidence;
+```java
+// MainActivity.java - 主要狀態管理
+public class MainActivity extends AppCompatActivity {
+    private BLEManager bleManager;
+    private CalibrationManager calibrationManager;
+    private ChartManager chartManager;
+    private FirebaseManager firebaseManager;
+    private VoltageFilter voltageFilter;
+    
+    private boolean isConnected = false;
+    private int dataCount = 0;
+    
+    // 狀態通過回調接口管理
+    private void setupBLECallbacks() {
+        bleManager.setDataCallback(data -> {
+            // 應用校正
+            IMUData calibratedData = calibrationManager.applyCalibration(data);
+            
+            // 更新圖表
+            chartManager.addDataPoint(calibratedData);
+            
+            // 上傳至 Firebase（如果錄製模式開啟）
+            firebaseManager.addData(calibratedData);
+            
+            // 更新 UI
+            updateDataDisplay(calibratedData);
+        });
+    }
 }
 ```
+
 
 ### 效能優化建議
 
@@ -884,34 +723,43 @@ class TestSessionState {
 
 ### 校正流程設計
 
-#### 1. 校正模式觸發
+#### 1. 校正模式觸發（Android Java 實現）
 
 在主介面提供「零點校正」按鈕：
 
-```dart
-class SettingsPage extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text('設定')),
-      body: ListView(
-        children: [
-          ListTile(
-            leading: Icon(Icons.tune),
-            title: Text('校正姿態'),
-            subtitle: Text('校準感測器姿態以提高識別準確度'),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => CalibrationPage()),
-            ),
-          ),
-          // 其他設定選項...
-        ],
-      ),
-    );
-  }
+**實際實現位置**：`APP/android/app/src/main/java/com/example/smartbadmintonracket/MainActivity.java`
+
+```java
+// MainActivity.java
+private void setupCalibrationButton() {
+    calibrateButton.setOnClickListener(v -> {
+        if (!isConnected) {
+            Toast.makeText(this, "請先連接設備", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        
+        if (calibrationManager.isCalibrating()) {
+            // 取消校正
+            calibrationManager.cancelCalibration();
+        } else {
+            // 開始校正
+            showCalibrationDialog();
+        }
+    });
+}
+
+private void showCalibrationDialog() {
+    new android.app.AlertDialog.Builder(this)
+        .setTitle("零點校正")
+        .setMessage("請將球拍靜止平置在平坦表面上，保持不動。\n\n準備好後點擊「開始校正」")
+        .setPositiveButton("開始校正", (dialog, which) -> {
+            startCalibration();
+        })
+        .setNegativeButton("取消", null)
+        .show();
 }
 ```
+
 
 #### 2. 校正步驟設計
 
@@ -930,92 +778,104 @@ class SettingsPage extends StatelessWidget {
 └─────────────────────────────────┘
 ```
 
-**步驟2：靜止狀態採樣**
-```dart
-class CalibrationPage extends StatefulWidget {
-  @override
-  _CalibrationPageState createState() => _CalibrationPageState();
-}
+**步驟2：靜止狀態採樣（Android Java 實現）**
 
-class _CalibrationPageState extends State<CalibrationPage> {
-  List<IMUData> calibrationSamples = [];
-  bool isCalibrating = false;
-  int sampleCount = 0;
-  static const int requiredSamples = 200; // 收集200筆資料（約4秒）
-  
-  void startCalibration() {
-    setState(() {
-      isCalibrating = true;
-      sampleCount = 0;
-      calibrationSamples.clear();
-    });
+**實際實現位置**：`APP/android/app/src/main/java/com/example/smartbadmintonracket/calibration/CalibrationManager.java`
+
+```java
+// CalibrationManager.java
+public class CalibrationManager {
+    private static final int REQUIRED_SAMPLES = 200;  // 收集200筆資料（約4秒）
+    private List<IMUData> calibrationSamples = new ArrayList<>();
+    private boolean isCalibrating = false;
+    private CalibrationCallback callback;
     
-    // 開始收集資料
-    BLEIMUReceiver().onDataReceived = (data) {
-      if (isCalibrating && sampleCount < requiredSamples) {
-        setState(() {
-          calibrationSamples.add(data);
-          sampleCount++;
-        });
+    public void startCalibration(CalibrationCallback callback) {
+        this.callback = callback;
+        isCalibrating = true;
+        calibrationSamples.clear();
+    }
+    
+    public void addCalibrationSample(IMUData data) {
+        if (!isCalibrating) return;
+        
+        calibrationSamples.add(data);
         
         // 更新進度
-        if (sampleCount % 10 == 0) {
-          _updateProgress();
+        if (callback != null) {
+            callback.onProgress(calibrationSamples.size(), REQUIRED_SAMPLES);
         }
-      }
-      
-      if (sampleCount >= requiredSamples) {
-        _completeCalibration();
-      }
-    };
-  }
-  
-  void _completeCalibration() {
-    // 計算校正參數
-    CalibrationData calData = _calculateCalibration(calibrationSamples);
+        
+        // 完成校正
+        if (calibrationSamples.size() >= REQUIRED_SAMPLES) {
+            completeCalibration();
+        }
+    }
     
-    // 保存校正參數
-    _saveCalibrationData(calData);
+    private void completeCalibration() {
+        // 計算校正參數
+        CalibrationData calData = calculateCalibration(calibrationSamples);
+        
+        // 保存校正參數
+        storage.saveCalibration(calData);
+        
+        isCalibrating = false;
+        
+        if (callback != null) {
+            callback.onComplete(calData);
+        }
+    }
     
-    setState(() {
-      isCalibrating = false;
-    });
+    private CalibrationData calculateCalibration(List<IMUData> samples) {
+        // 計算平均值作為偏移量
+        float sumAX = 0, sumAY = 0, sumAZ = 0;
+        float sumGX = 0, sumGY = 0, sumGZ = 0;
+        
+        for (IMUData data : samples) {
+            sumAX += data.accelX;
+            sumAY += data.accelY;
+            sumAZ += data.accelZ;
+            sumGX += data.gyroX;
+            sumGY += data.gyroY;
+            sumGZ += data.gyroZ;
+        }
+        
+        int count = samples.size();
+        float accelXOffset = sumAX / count;
+        float accelYOffset = sumAY / count;
+        float accelZMean = sumAZ / count;
+        float accelZOffset = accelZMean - 1.0f;  // Z軸減去1g（重力）
+        
+        float gyroXOffset = sumGX / count;
+        float gyroYOffset = sumGY / count;
+        float gyroZOffset = sumGZ / count;
+        
+        return new CalibrationData(
+            accelXOffset, accelYOffset, accelZOffset,
+            gyroXOffset, gyroYOffset, gyroZOffset
+        );
+    }
     
-    // 顯示完成訊息
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('校正完成'),
-        content: Text('姿態校正已完成，將應用於後續的揮拍識別'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('確定'),
-          ),
-        ],
-      ),
-    );
-  }
-  
-  CalibrationData _calculateCalibration(List<IMUData> samples) {
-    // 計算平均值作為偏移量
-    double accelXOffset = samples.map((s) => s.accelX).reduce((a, b) => a + b) / samples.length;
-    double accelYOffset = samples.map((s) => s.accelY).reduce((a, b) => a + b) / samples.length;
-    double accelZMean = samples.map((s) => s.accelZ).reduce((a, b) => a + b) / samples.length;
-    // Z 軸偏移量：從平均值中減去 1g（重力）
-    double accelZOffset = accelZMean - 1.0;
-    
-    double gyroXOffset = samples.map((s) => s.gyroX).reduce((a, b) => a + b) / samples.length;
-    double gyroYOffset = samples.map((s) => s.gyroY).reduce((a, b) => a + b) / samples.length;
-    double gyroZOffset = samples.map((s) => s.gyroZ).reduce((a, b) => a + b) / samples.length;
-    
-    return CalibrationData(
-      accelOffset: Offset3D(accelXOffset, accelYOffset, accelZOffset),
-      gyroOffset: Offset3D(gyroXOffset, gyroYOffset, gyroZOffset),
-    );
-  }
+    public IMUData applyCalibration(IMUData rawData) {
+        CalibrationData calData = storage.loadCalibration();
+        if (calData == null) {
+            return rawData;  // 未校正則返回原始資料
+        }
+        
+        return new IMUData(
+            rawData.timestamp,
+            rawData.accelX - calData.accelXOffset,
+            rawData.accelY - calData.accelYOffset,
+            rawData.accelZ - calData.accelZOffset,
+            rawData.gyroX - calData.gyroXOffset,
+            rawData.gyroY - calData.gyroYOffset,
+            rawData.gyroZ - calData.gyroZOffset,
+            rawData.voltage
+        );
+    }
 }
 ```
+
 
 **校正進度顯示：**
 ```
@@ -1030,50 +890,39 @@ class _CalibrationPageState extends State<CalibrationPage> {
 └─────────────────────────────────┘
 ```
 
-#### 3. 校正資料應用
+#### 3. 校正資料應用（已實現）
 
-校正後的資料需要應用到所有接收到的資料：
+校正後的資料需要應用到所有接收到的資料。實際實現已在 `CalibrationManager.java` 中完成，詳見上方代碼範例。
 
-```java
-public class CalibrationManager {
-    private CalibrationData calibrationData;
-    
-    public IMUData applyCalibration(IMUData rawData) {
-        if (calibrationData == null) {
-            return rawData; // 未校正則返回原始資料
-        }
-        
-        return new IMUData(
-            rawData.timestamp,
-            rawData.accelX - calibrationData.accelXOffset,
-            rawData.accelY - calibrationData.accelYOffset,
-            rawData.accelZ - calibrationData.accelZOffset,
-            rawData.gyroX - calibrationData.gyroXOffset,
-            rawData.gyroY - calibrationData.gyroYOffset,
-            rawData.gyroZ - calibrationData.gyroZOffset,
-            rawData.voltage
-        );
-    }
-}
-```
+**應用時機**：
+- 所有顯示的資料都經過校正
+- 所有上傳至 Firebase 的資料都經過校正
+- 所有圖表顯示的資料都經過校正
 
 **重要注意事項**：
 - 所有顯示的資料都應該經過校正
 - 所有上傳的資料都應該經過校正
 - 校正值儲存在本地，App 重啟後仍然有效
 
-#### 4. 校正資料儲存
+#### 4. 校正資料儲存（已實現）
 
-使用 SharedPreferences 保存校正參數：
+使用 SharedPreferences + Gson 保存校正參數：
+
+**實際實現位置**：`APP/android/app/src/main/java/com/example/smartbadmintonracket/calibration/CalibrationStorage.java`
 
 ```java
 public class CalibrationStorage {
     private static final String CALIBRATION_KEY = "imu_calibration_data";
     private SharedPreferences prefs;
+    private Gson gson;
+    
+    public CalibrationStorage(Context context) {
+        prefs = context.getSharedPreferences("CalibrationPrefs", Context.MODE_PRIVATE);
+        gson = new Gson();
+    }
     
     public void saveCalibration(CalibrationData data) {
         SharedPreferences.Editor editor = prefs.edit();
-        Gson gson = new Gson();
         String json = gson.toJson(data);
         editor.putString(CALIBRATION_KEY, json);
         editor.apply();
@@ -1083,7 +932,6 @@ public class CalibrationStorage {
         String json = prefs.getString(CALIBRATION_KEY, null);
         if (json == null) return null;
         
-        Gson gson = new Gson();
         return gson.fromJson(json, CalibrationData.class);
     }
     
@@ -1100,32 +948,31 @@ public class CalibrationStorage {
 3. **定期校正**：當感測器讀數似乎不準確時建議校正
 4. **校正持久性**：校正值儲存在本地，App 重啟後仍然有效
 
-### 校正驗證
+### 校正驗證（待實作）
 
-校正完成後，可以進行簡單的驗證：
+校正完成後，可以進行簡單的驗證。目前實現中，校正值會直接儲存並應用，未來可添加驗證邏輯。
 
-```dart
-bool validateCalibration(CalibrationData calData) {
-  // 驗證重力方向是否合理
-  double gravityMag = sqrt(
-    pow(calData.gravityDirection.x, 2) +
-    pow(calData.gravityDirection.y, 2) +
-    pow(calData.gravityDirection.z, 2)
-  );
-  
-  // 重力大小應接近1g
-  if (gravityMag < 0.8 || gravityMag > 1.2) {
-    return false; // 校正資料異常
-  }
-  
-  // 驗證陀螺儀偏移是否在合理範圍內
-  if (calData.gyroOffset.magnitude > 50) { // 50 dps
-    return false; // 陀螺儀偏移過大
-  }
-  
-  return true;
+**Java 實現範例（待實作）**：
+```java
+public boolean validateCalibration(CalibrationData calData) {
+    // 驗證加速度計偏移是否在合理範圍內
+    if (Math.abs(calData.accelXOffset) > 2.0f || 
+        Math.abs(calData.accelYOffset) > 2.0f || 
+        Math.abs(calData.accelZOffset) > 2.0f) {
+        return false; // 加速度計偏移過大
+    }
+    
+    // 驗證陀螺儀偏移是否在合理範圍內
+    if (Math.abs(calData.gyroXOffset) > 50.0f || 
+        Math.abs(calData.gyroYOffset) > 50.0f || 
+        Math.abs(calData.gyroZOffset) > 50.0f) {
+        return false; // 陀螺儀偏移過大
+    }
+    
+    return true;
 }
 ```
+
 
 ### 進階校正功能（可選）
 
@@ -1236,89 +1083,9 @@ public class FirebaseManager {
 1. **時間條件**：距離上次上傳已過 5 秒
 2. **數量條件**：已累積 100 筆資料
 
-### 離線資料緩存
+### 離線資料緩存（待實作）
 
-使用本地資料庫儲存未上傳的資料：
-
-```dart
-import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
-
-class LocalDataCache {
-  static Database? _database;
-  
-  Future<Database> get database async {
-    if (_database != null) return _database!;
-    _database = await _initDatabase();
-    return _database!;
-  }
-  
-  Future<Database> _initDatabase() async {
-    String path = join(await getDatabasesPath(), 'imu_data.db');
-    return await openDatabase(
-      path,
-      version: 1,
-      onCreate: (db, version) {
-        return db.execute('''
-          CREATE TABLE imu_data(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id TEXT,
-            timestamp INTEGER,
-            accelX REAL,
-            accelY REAL,
-            accelZ REAL,
-            gyroX REAL,
-            gyroY REAL,
-            gyroZ REAL,
-            voltage REAL,
-            received_at INTEGER,
-            uploaded INTEGER DEFAULT 0
-          )
-        ''');
-      },
-    );
-  }
-  
-  Future<void> insertData(Map<String, dynamic> data) async {
-    final db = await database;
-    await db.insert('imu_data', {
-      'device_id': 'SmartRacket_001',
-      'timestamp': data['timestamp'],
-      'accelX': data['accelX'],
-      'accelY': data['accelY'],
-      'accelZ': data['accelZ'],
-      'gyroX': data['gyroX'],
-      'gyroY': data['gyroY'],
-      'gyroZ': data['gyroZ'],
-      'voltage': data['voltage'],
-      'received_at': data['receivedAt'],
-      'uploaded': 0,
-    });
-  }
-  
-  Future<List<Map<String, dynamic>>> getUnuploadedData() async {
-    final db = await database;
-    return await db.query(
-      'imu_data',
-      where: 'uploaded = ?',
-      whereArgs: [0],
-      orderBy: 'timestamp ASC',
-    );
-  }
-  
-  Future<void> markAsUploaded(List<int> ids) async {
-    final db = await database;
-    for (int id in ids) {
-      await db.update(
-        'imu_data',
-        {'uploaded': 1},
-        where: 'id = ?',
-        whereArgs: [id],
-      );
-    }
-  }
-}
-```
+目前 Firebase 上傳失敗時會在 Logcat 中記錄錯誤，但尚未實現本地資料庫儲存。未來可考慮使用 Room 資料庫實現離線緩存和重試機制。
 
 ---
 
@@ -1733,18 +1500,19 @@ training_data/
 │  └──────┬───────┘                  │
 │         │                           │
 │  ┌──────▼───────┐                  │
-│  │ Data Buffer  │                  │
-│  │  - 滑動窗口  │                  │
-│  │  - 40筆frame │                  │
+│  │ Calibration  │                  │
+│  │  - 零點校正   │                  │
+│  │  - 應用校正   │                  │
 │  └──────┬───────┘                  │
 │         │                           │
 │  ├──────┴───────┬──────────────────┤
 │  │              │                  │
 │  ▼              ▼                  │
 │  ┌──────────┐  ┌──────────────┐   │
-│  │  AI推理   │  │  Data Upload │   │
-│  │  (TFLite)│  │  - WiFi上傳  │   │
-│  │          │  │  - 本地緩存  │   │
+│  │ Chart     │  │  Firebase    │   │
+│  │ Manager   │  │  - Firestore │   │
+│  │ - 圖表    │  │  - 批次上傳  │   │
+│  │ - 降採樣  │  │  - 錄製模式  │   │
 │  └──────────┘  └──────────────┘   │
 │                                     │
 └─────────────────────────────────────┘
@@ -1770,21 +1538,21 @@ training_data/
    - 處理資料解析錯誤
    - 記錄錯誤日誌用於除錯
 
-### 網路傳輸注意事項
+### 網路傳輸注意事項（Firebase Firestore）
 
-1. **WiFi 狀態檢查**：
-   - 上傳前檢查WiFi連接狀態
-   - WiFi未連接時將資料暫存本地
+1. **網路狀態檢查**：
+   - Firebase 會自動處理網路狀態
+   - 網路未連接時，資料會暫存在本地（待實作 Room 資料庫）
 
 2. **資料上傳失敗處理**：
-   - 實現重試機制（最多3次）
-   - 失敗的資料存入本地資料庫
-   - 定期檢查並重新上傳未成功的資料
+   - 目前會在 Logcat 中記錄錯誤
+   - 未來可實現重試機制和本地資料庫儲存
+   - 定期檢查並重新上傳未成功的資料（待實作）
 
 3. **電池消耗優化**：
-   - 批次上傳減少網路請求次數
-   - 使用背景任務處理上傳
-   - 避免過於頻繁的網路請求
+   - 批次上傳減少網路請求次數（每 5 秒或 100 筆）
+   - 僅在錄製模式下上傳，避免不必要的網路請求
+   - 使用 Firebase 的批次寫入功能（未來可優化）
 
 ### 資料處理注意事項
 
@@ -1855,10 +1623,10 @@ training_data/
 **症狀**：收到非30 bytes的資料
 
 **解決方法**：
-```dart
+```java
 if (data.length != 30) {
-  print("警告：收到異常長度的資料 ${data.length} bytes");
-  return; // 跳過此筆資料
+    Log.w(TAG, "警告：收到異常長度的資料 " + data.length + " bytes");
+    return; // 跳過此筆資料
 }
 ```
 
@@ -1867,23 +1635,23 @@ if (data.length != 30) {
 **症狀**：加速度或角速度值超出合理範圍
 
 **解決方法**：
-```dart
-bool validateData(Map<String, dynamic> data) {
-  // 加速度範圍：-16g ~ +16g
-  if (data['accelX'].abs() > 16 || 
-      data['accelY'].abs() > 16 || 
-      data['accelZ'].abs() > 16) {
-    return false;
-  }
-  
-  // 角速度範圍：-2000 ~ +2000 dps
-  if (data['gyroX'].abs() > 2000 || 
-      data['gyroY'].abs() > 2000 || 
-      data['gyroZ'].abs() > 2000) {
-    return false;
-  }
-  
-  return true;
+```java
+public boolean validateData(IMUData data) {
+    // 加速度範圍：-20g ~ +20g（已放寬範圍）
+    if (Math.abs(data.accelX) > 20.0f || 
+        Math.abs(data.accelY) > 20.0f || 
+        Math.abs(data.accelZ) > 20.0f) {
+        return false;
+    }
+    
+    // 角速度範圍：-2500 ~ +2500 dps（已放寬範圍）
+    if (Math.abs(data.gyroX) > 2500.0f || 
+        Math.abs(data.gyroY) > 2500.0f || 
+        Math.abs(data.gyroZ) > 2500.0f) {
+        return false;
+    }
+    
+    return true;
 }
 ```
 
@@ -1923,7 +1691,9 @@ bool validateData(Map<String, dynamic> data) {
 
 - [Seeed XIAO nRF52840 Sense 文件](https://wiki.seeedstudio.com/XIAO_BLE/)
 - [ArduinoBLE 函式庫文件](https://www.arduino.cc/reference/en/libraries/arduinoble/)
-- [Flutter Blue Plus 文件](https://pub.dev/packages/flutter_blue_plus)
+- [Android BLE 官方文件](https://developer.android.com/guide/topics/connectivity/bluetooth/ble-overview)
+- [MPAndroidChart 文件](https://github.com/PhilJay/MPAndroidChart)
+- [Firebase Firestore Android 文件](https://firebase.google.com/docs/firestore/quickstart)
 - [BLE 規格文件](https://www.bluetooth.com/specifications/specs/core-specification/)
 
 ### 範例程式碼位置
@@ -1939,7 +1709,7 @@ bool validateData(Map<String, dynamic> data) {
   - iOS: LightBlue
 - **資料視覺化**: 
   - Python: Matplotlib, Plotly
-  - Flutter: fl_chart
+  - Android: MPAndroidChart v3.1.0
 - **API測試**: Postman, curl
 
 ---
@@ -1950,14 +1720,18 @@ bool validateData(Map<String, dynamic> data) {
 
 ---
 
-**文件版本**: v1.2  
-**最後更新**: 2024年11月  
+**文件版本**: v1.3  
+**最後更新**: 2025年11月  
 **維護者**: DIID Term Project Team  
 **更新內容**: 
-- 新增手機App結果展示與UI設計章節
-- 更新零點校正功能章節（Android 實現）
-- 新增曲線圖視覺化規格（6個獨立圖表，100ms更新）
-- 更新 Firebase 資料傳輸章節（批次上傳，錄製模式）
-- 新增遠端 AI 辨識章節（5種球路類型，殺球球速計算）
-- 更新系統概述，包含所有核心功能
+- ✅ 更新系統概述：WiFi → Firebase Firestore
+- ✅ 移除所有 Flutter/Dart 相關內容，僅保留 Android (Java) 實現
+- ✅ 更新零點校正功能：手動觸發，收集 200 筆資料，使用 SharedPreferences + Gson 儲存
+- ✅ 更新曲線圖視覺化：MPAndroidChart 實現，6個獨立圖表，50Hz → 10Hz 降採樣
+- ✅ 更新 Firebase 資料傳輸：批次上傳（5秒或100筆），錄製模式切換
+- ✅ 更新電壓相關技術：校準常數 8.11，讀取頻率每10秒，30筆取平均，雙層濾波器
+- ✅ 更新資料解析範例：10-bit 轉 12-bit，正確的電壓計算公式
+- ✅ 更新 UI 設計：Material Design 3，狀態卡片，控制按鈕卡片
+- ✅ 更新狀態管理：Java 實現範例
+- ✅ 更新系統架構流程圖：反映實際實現
 

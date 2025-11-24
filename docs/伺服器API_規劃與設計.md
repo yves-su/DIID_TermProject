@@ -1,25 +1,92 @@
 # 🌐 伺服器 API 規劃與設計指南
 
+> **📌 當前實現狀態**：  
+> ✅ **Android App 目前使用 Google Firebase Firestore** 直接上傳 IMU 資料至雲端資料庫  
+> ✅ 資料上傳功能已實現並正常運作（批次上傳、錄製模式控制）  
+> ❌ **AI 球路辨識功能尚未實現**  
+> 
+> **📋 本文檔內容**：  
+> 本文檔主要描述**未來規劃的 HTTP API 伺服器**，用於實現即時 AI 球路辨識功能。  
+> 當前 Firebase Firestore 用於**資料儲存**，未來 HTTP API 將用於**即時辨識**，兩者可並存使用。
+
 ## 📋 目錄
 
-1. [API 架構概述](#api-架構概述)
-2. [技術選型建議](#技術選型建議)
-3. [API 端點設計](#api-端點設計)
-4. [資料格式規範](#資料格式規範)
-5. [實作範例](#實作範例)
-6. [部署建議](#部署建議)
+1. [當前實現狀況](#當前實現狀況)
+2. [API 架構概述](#api-架構概述)
+3. [技術選型建議](#技術選型建議)
+4. [API 端點設計](#api-端點設計)
+5. [資料格式規範](#資料格式規範)
+6. [實作範例](#實作範例)
+7. [部署建議](#部署建議)
+8. [Android App 整合](#android-app-整合)
+
+---
+
+## 當前實現狀況
+
+### ✅ 當前實現：Google Firebase Firestore（已實現）
+
+**Android App 目前使用 Google Firebase Firestore 進行資料上傳**：
+
+#### 實現細節
+- **服務**：Google Firebase Firestore（NoSQL 雲端資料庫）
+- **上傳方式**：批次上傳（每 5 秒或累積 100 筆資料）
+- **錄製模式**：可切換錄製模式，僅在錄製模式下上傳
+- **資料集合**：`imu_data` collection
+
+#### 上傳資料欄位
+```json
+{
+  "device_id": "SmartRacket_001",
+  "session_id": "uuid-generated-session-id",
+  "timestamp": 1234567890,
+  "accelX": 0.123,
+  "accelY": -0.456,
+  "accelZ": 0.789,
+  "gyroX": 1.234,
+  "gyroY": -2.345,
+  "gyroZ": 3.456,
+  "voltage": 4.14,
+  "received_at": 1234567890123,
+  "calibrated": true,
+  "uploaded_at": "Firestore ServerTimestamp"
+}
+```
+
+#### 實現位置
+- **主要類別**：`APP/android/app/src/main/java/com/example/smartbadmintonracket/firebase/FirebaseManager.java`
+- **初始化**：在 `MainActivity.onCreate()` 中初始化
+- **資料流程**：`BLEManager` → `IMUDataParser` → `CalibrationManager` → `FirebaseManager`
+
+#### Firebase 設定
+- **設定檔**：`APP/android/app/google-services.json`
+- **依賴**：Firebase BOM 32.7.0 + Firebase Firestore
+- **詳細設定步驟**：參考 `APP/android/Firebase_設定步驟.md`
+
+### 未來規劃（HTTP API 伺服器）
+
+本文檔描述的是未來規劃的 HTTP API 伺服器，用於：
+- 即時 AI 球路辨識
+- 計算殺球球速
+- 返回辨識結果給 Android App
 
 ---
 
 ## API 架構概述
 
-### 系統架構
+### 系統架構（未來規劃）
 
 ```
 Android App → HTTP/HTTPS → 伺服器 API → AI 模型 → 辨識結果 → Android App
 ```
 
-### 核心功能
+**與當前實現的關係**：
+- ✅ **當前實現**：Android App → **Google Firebase Firestore**（資料上傳與儲存）
+- ⏭️ **未來規劃**：Android App → HTTP API（即時 AI 辨識） + Firebase Firestore（資料儲存，繼續使用）
+
+**說明**：Firebase Firestore 和 HTTP API 可以同時使用，Firebase 負責資料儲存，HTTP API 負責即時辨識。
+
+### 核心功能（未來規劃）
 
 1. **接收 IMU 資料**：接收 Android App 傳送的 40 筆資料窗口
 2. **AI 模型推理**：使用訓練好的模型進行球路辨識
@@ -195,10 +262,12 @@ POST /api/v1/recognize/batch
 
 1. **資料數量**：必須恰好 40 筆
 2. **資料格式**：每筆資料必須包含所有必要欄位
-3. **數值範圍**：
-   - 加速度：-16g ~ +16g
-   - 角速度：-2000 dps ~ +2000 dps
+3. **數值範圍**（已更新，與 Android App 一致）：
+   - 加速度：-20g ~ +20g（已放寬範圍）
+   - 角速度：-2500 dps ~ +2500 dps（已放寬範圍）
 4. **時間戳記**：必須是有效的數字
+
+**注意**：Android App 目前使用的驗證範圍已放寬，伺服器端也應使用相同範圍以保持一致。
 
 ### 辨識結果格式
 
@@ -347,21 +416,21 @@ def validate_data_frame(data_frame):
                     'message': f'第 {i+1} 筆資料缺少欄位：{field}'
                 }
         
-        # 檢查數值範圍
-        if abs(data_point['accelX']) > 16 or \
-           abs(data_point['accelY']) > 16 or \
-           abs(data_point['accelZ']) > 16:
+        # 檢查數值範圍（已更新，與 Android App 一致）
+        if abs(data_point['accelX']) > 20 or \
+           abs(data_point['accelY']) > 20 or \
+           abs(data_point['accelZ']) > 20:
             return {
                 'valid': False,
-                'message': f'第 {i+1} 筆資料加速度超出範圍（±16g）'
+                'message': f'第 {i+1} 筆資料加速度超出範圍（±20g）'
             }
         
-        if abs(data_point['gyroX']) > 2000 or \
-           abs(data_point['gyroY']) > 2000 or \
-           abs(data_point['gyroZ']) > 2000:
+        if abs(data_point['gyroX']) > 2500 or \
+           abs(data_point['gyroY']) > 2500 or \
+           abs(data_point['gyroZ']) > 2500:
             return {
                 'valid': False,
-                'message': f'第 {i+1} 筆資料角速度超出範圍（±2000 dps）'
+                'message': f'第 {i+1} 筆資料角速度超出範圍（±2500 dps）'
             }
     
     return {'valid': True}
@@ -510,7 +579,43 @@ CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "app:app"]
 
 ## Android App 整合
 
-### 更新 `RecognitionManager.java`
+### 當前實現（Firebase Firestore）
+
+**目前 Android App 使用 Firebase Firestore 直接上傳資料**：
+
+```java
+// FirebaseManager.java - 當前實現
+public class FirebaseManager {
+    public void addData(IMUData data) {
+        if (!isRecordingMode) return;
+        
+        // 準備上傳資料
+        Map<String, Object> docData = new HashMap<>();
+        docData.put("device_id", "SmartRacket_001");
+        docData.put("session_id", getCurrentSessionId());
+        docData.put("timestamp", data.timestamp);
+        docData.put("accelX", data.accelX);
+        docData.put("accelY", data.accelY);
+        docData.put("accelZ", data.accelZ);
+        docData.put("gyroX", data.gyroX);
+        docData.put("gyroY", data.gyroY);
+        docData.put("gyroZ", data.gyroZ);
+        docData.put("voltage", data.voltage);
+        docData.put("received_at", data.receivedAt);
+        docData.put("calibrated", true);
+        docData.put("uploaded_at", FieldValue.serverTimestamp());
+        
+        // 上傳至 Firestore
+        db.collection("imu_data").add(docData);
+    }
+}
+```
+
+**實現位置**：`APP/android/app/src/main/java/com/example/smartbadmintonracket/firebase/FirebaseManager.java`
+
+### 未來規劃（HTTP API 整合）
+
+**當 HTTP API 伺服器開發完成後，可以新增 `RecognitionManager.java`**：
 
 ```java
 public class RecognitionManager {
@@ -535,13 +640,13 @@ public class RecognitionManager {
             JSONArray dataArray = new JSONArray();
             for (IMUData data : dataFrame) {
                 JSONObject dataPoint = new JSONObject();
-                dataPoint.put("timestamp", data.getTimestamp());
-                dataPoint.put("accelX", data.getAccelX());
-                dataPoint.put("accelY", data.getAccelY());
-                dataPoint.put("accelZ", data.getAccelZ());
-                dataPoint.put("gyroX", data.getGyroX());
-                dataPoint.put("gyroY", data.getGyroY());
-                dataPoint.put("gyroZ", data.getGyroZ());
+                dataPoint.put("timestamp", data.timestamp);
+                dataPoint.put("accelX", data.accelX);
+                dataPoint.put("accelY", data.accelY);
+                dataPoint.put("accelZ", data.accelZ);
+                dataPoint.put("gyroX", data.gyroX);
+                dataPoint.put("gyroY", data.gyroY);
+                dataPoint.put("gyroZ", data.gyroZ);
                 dataArray.put(dataPoint);
             }
             request.put("data_frame", dataArray);
@@ -597,6 +702,8 @@ public class RecognitionManager {
 }
 ```
 
+**注意**：此功能目前尚未實現，屬於未來規劃。
+
 ---
 
 ## 測試建議
@@ -632,16 +739,39 @@ curl -X POST http://localhost:5000/api/v1/recognize \
 
 ---
 
+## 當前實現與未來規劃對照
+
+### 已實現（Android App）
+
+- ✅ **Firebase Firestore 資料上傳**：批次上傳 IMU 資料
+- ✅ **錄製模式控制**：可切換錄製模式
+- ✅ **資料校正**：所有上傳資料已應用零點校正
+- ✅ **資料驗證**：驗證範圍已放寬（加速度 ±20g，角速度 ±2500 dps）
+
+### 待實現（未來規劃）
+
+- ⏭️ **HTTP API 伺服器**：用於即時 AI 辨識
+- ⏭️ **AI 模型整合**：TensorFlow/PyTorch 模型推理
+- ⏭️ **球路辨識**：5 種球路類型（smash, drive, toss, drop, other）
+- ⏭️ **球速計算**：殺球球速計算
+- ⏭️ **Android App 整合**：RecognitionManager 實現
+
 ## 下一步
 
-1. ✅ 選擇技術棧（建議：Python Flask）
+1. ✅ 選擇技術棧（建議：Python Flask 或 FastAPI）
 2. ⏭️ 建立專案結構
 3. ⏭️ 實作 API 端點
 4. ⏭️ 整合 AI 模型
 5. ⏭️ 測試與部署
-6. ⏭️ 整合到 Android App
+6. ⏭️ 整合到 Android App（新增 RecognitionManager）
 
 ---
 
-**最後更新**: 2024年11月
+**文件版本**: v1.1  
+**最後更新**: 2025年11月  
+**更新內容**：
+- ✅ 添加當前實現狀況說明（Firebase Firestore）
+- ✅ 更新資料驗證範圍（與 Android App 一致）
+- ✅ 說明 HTTP API 為未來規劃
+- ✅ 更新 Android App 整合章節，區分當前實現和未來規劃
 
