@@ -39,6 +39,8 @@ public class MainActivity extends AppCompatActivity {
     private FirebaseManager firebaseManager;
     private TextView statusText;
     private TextView dataCountText;
+    private View statusIndicator;
+    private com.google.android.material.card.MaterialCardView statusMessageCard;
     private TextView timestampText;
     private TextView accelText;
     private TextView gyroText;
@@ -112,6 +114,8 @@ public class MainActivity extends AppCompatActivity {
     private void initViews() {
         statusText = findViewById(R.id.statusText);
         dataCountText = findViewById(R.id.dataCountText);
+        statusIndicator = findViewById(R.id.statusIndicator);
+        statusMessageCard = findViewById(R.id.statusMessageCard);
         timestampText = findViewById(R.id.timestampText);
         accelText = findViewById(R.id.accelText);
         gyroText = findViewById(R.id.gyroText);
@@ -191,7 +195,7 @@ public class MainActivity extends AppCompatActivity {
             
             scanButton.setEnabled(false);
             statusText.setText("狀態: 正在掃描...");
-            statusText.setTextColor(0xFFFF9800); // 橙色
+            statusIndicator.setBackgroundResource(R.drawable.status_indicator_connecting);
             
             bleManager.startScan(new BLEManager.BLEConnectionCallback() {
                 @Override
@@ -206,7 +210,7 @@ public class MainActivity extends AppCompatActivity {
                     runOnUiThread(() -> {
                         isConnected = true;
                         statusText.setText("狀態: 已連接");
-                        statusText.setTextColor(0xFF4CAF50); // 綠色
+                        statusIndicator.setBackgroundResource(R.drawable.status_indicator_connected);
                         scanButton.setEnabled(false);
                         disconnectButton.setEnabled(true);
                         // 連接成功後啟動圖表更新
@@ -222,7 +226,7 @@ public class MainActivity extends AppCompatActivity {
                     runOnUiThread(() -> {
                         isConnected = false;
                         statusText.setText("狀態: 已斷線");
-                        statusText.setTextColor(0xFFF44336); // 紅色
+                        statusIndicator.setBackgroundResource(R.drawable.status_indicator_disconnected);
                         scanButton.setEnabled(true);
                         disconnectButton.setEnabled(false);
                         // 重置電壓濾波器
@@ -237,7 +241,7 @@ public class MainActivity extends AppCompatActivity {
                 public void onConnectionFailed(String error) {
                     runOnUiThread(() -> {
                         statusText.setText("狀態: 連接失敗 - " + error);
-                        statusText.setTextColor(0xFFF44336); // 紅色
+                        statusIndicator.setBackgroundResource(R.drawable.status_indicator_disconnected);
                         scanButton.setEnabled(true);
                         Toast.makeText(MainActivity.this, "連接失敗: " + error, Toast.LENGTH_LONG).show();
                     });
@@ -249,7 +253,7 @@ public class MainActivity extends AppCompatActivity {
             bleManager.disconnect();
             isConnected = false;
             statusText.setText("狀態: 已斷開");
-            statusText.setTextColor(0xFFF44336); // 紅色
+            statusIndicator.setBackgroundResource(R.drawable.status_indicator_disconnected);
             scanButton.setEnabled(true);
             disconnectButton.setEnabled(false);
             dataCount = 0;
@@ -306,29 +310,33 @@ public class MainActivity extends AppCompatActivity {
             if (!isRecording) {
                 // 開始錄製
                 recordButton.setText("停止錄製");
-                recordButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFFF44336)); // 紅色
+                recordButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(getResources().getColor(R.color.recording_active, getTheme())));
                 recordingStatusText.setText("錄製中... Session: " + firebaseManager.getCurrentSessionId());
                 recordingStatusText.setVisibility(android.view.View.VISIBLE);
-                recordingStatusText.setTextColor(0xFFF44336); // 紅色
+                recordingStatusText.setTextColor(getResources().getColor(R.color.recording_active, getTheme()));
+                statusMessageCard.setVisibility(android.view.View.VISIBLE);
                 Toast.makeText(this, "開始錄製資料", Toast.LENGTH_SHORT).show();
             } else {
                 // 停止錄製
                 recordButton.setText("開始錄製");
-                recordButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF4CAF50)); // 綠色
+                recordButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(getResources().getColor(R.color.recording_inactive, getTheme())));
                 recordingStatusText.setText("錄製已停止");
-                recordingStatusText.setTextColor(0xFF757575); // 灰色
+                recordingStatusText.setTextColor(getResources().getColor(android.R.color.darker_gray, getTheme()));
                 Toast.makeText(this, "停止錄製，資料已上傳", Toast.LENGTH_SHORT).show();
                 
                 // 3 秒後隱藏狀態文字
                 new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
                     recordingStatusText.setVisibility(android.view.View.GONE);
+                    if (calibrationStatusText.getVisibility() != android.view.View.VISIBLE) {
+                        statusMessageCard.setVisibility(android.view.View.GONE);
+                    }
                 }, 3000);
             }
         });
         
         // 初始狀態：未錄製
         recordButton.setText("開始錄製");
-        recordButton.setBackgroundColor(0xFF4CAF50); // 綠色
+        recordButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(getResources().getColor(R.color.recording_inactive, getTheme())));
         recordingStatusText.setVisibility(android.view.View.GONE);
     }
     
@@ -345,7 +353,7 @@ public class MainActivity extends AppCompatActivity {
     
     private void startCalibration() {
         calibrationManager.startCalibration(new CalibrationManager.CalibrationCallback() {
-            @Override
+                @Override
             public void onProgress(int current, int total) {
                 runOnUiThread(() -> {
                     int progress = (current * 100) / total;
@@ -353,6 +361,7 @@ public class MainActivity extends AppCompatActivity {
                         String.format("校正中... %d/%d (%d%%)", current, total, progress)
                     );
                     calibrationStatusText.setVisibility(android.view.View.VISIBLE);
+                    statusMessageCard.setVisibility(android.view.View.VISIBLE);
                     calibrateButton.setText("取消校正");
                 });
             }
@@ -371,7 +380,9 @@ public class MainActivity extends AppCompatActivity {
                     // 3 秒後隱藏狀態文字
                     new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
                         calibrationStatusText.setVisibility(android.view.View.GONE);
-                        calibrationStatusText.setTextColor(0xFFFF9800); // 恢復橙色
+                        if (recordingStatusText.getVisibility() != android.view.View.VISIBLE) {
+                            statusMessageCard.setVisibility(android.view.View.GONE);
+                        }
                     }, 3000);
                 });
             }
@@ -388,7 +399,9 @@ public class MainActivity extends AppCompatActivity {
                     // 3 秒後隱藏狀態文字
                     new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
                         calibrationStatusText.setVisibility(android.view.View.GONE);
-                        calibrationStatusText.setTextColor(0xFFFF9800); // 恢復橙色
+                        if (recordingStatusText.getVisibility() != android.view.View.VISIBLE) {
+                            statusMessageCard.setVisibility(android.view.View.GONE);
+                        }
                     }, 3000);
                 });
             }
@@ -466,7 +479,7 @@ public class MainActivity extends AppCompatActivity {
     }
     
     private void updateDataCount() {
-        dataCountText.setText(String.format("接收資料數: %d", dataCount));
+        dataCountText.setText(String.format("%d", dataCount));
     }
     
     private void clearDataDisplay() {

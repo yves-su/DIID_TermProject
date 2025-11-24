@@ -14,119 +14,191 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="智能羽毛球拍 IMU 接收器"
-        android:textSize="20sp"
+        android:textSize="24sp"
         android:textStyle="bold"
+        android:textColor="?attr/colorPrimary"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="16dp" />
+        android:layout_marginTop="24dp"
+        android:layout_marginBottom="8dp" />
 
-    <!-- 連接狀態 -->
-    <TextView
-        android:id="@+id/statusText"
-        android:layout_width="wrap_content"
+    <!-- 連接狀態卡片 -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/statusCard"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:text="狀態: 未連接"
-        android:textSize="16sp"
-        android:textColor="#FF0000"
+        app:cardCornerRadius="12dp"
+        app:cardElevation="2dp"
+        app:cardBackgroundColor="?attr/colorSurfaceVariant"
         app:layout_constraintTop_toBottomOf="@id/titleText"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="16dp" />
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginTop="16dp"
+        android:padding="16dp">
 
-    <!-- 掃描/連接按鈕 -->
-    <Button
-        android:id="@+id/scanButton"
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <!-- 狀態指示器 -->
+            <View
+                android:id="@+id/statusIndicator"
+                android:layout_width="12dp"
+                android:layout_height="12dp"
+                android:background="@drawable/status_indicator_disconnected"
+                android:layout_marginEnd="12dp" />
+
+            <!-- 連接狀態文字 -->
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="狀態: 未連接"
+                android:textSize="16sp"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:textStyle="bold" />
+
+            <!-- 資料計數 -->
+            <TextView
+                android:id="@+id/dataCountText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0"
+                android:textSize="14sp"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:background="?attr/colorPrimaryContainer"
+                android:paddingHorizontal="8dp"
+                android:paddingVertical="4dp"
+                android:layout_marginStart="8dp" />
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+    <!-- 控制按鈕卡片 -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/controlCard"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:text="掃描並連接"
-        app:layout_constraintTop_toBottomOf="@id/statusText"
+        app:cardCornerRadius="12dp"
+        app:cardElevation="2dp"
+        app:layout_constraintTop_toBottomOf="@id/statusCard"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="16dp" />
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginTop="16dp"
+        android:padding="12dp">
 
-    <!-- 斷開連接按鈕 -->
-    <Button
-        android:id="@+id/disconnectButton"
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center">
+
+            <!-- 掃描/連接按鈕 -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/scanButton"
+                style="@style/Widget.Material3.Button"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="掃描並連接"
+                android:textSize="16sp"
+                android:layout_marginBottom="8dp" />
+
+            <!-- 斷開連接按鈕 -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/disconnectButton"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="斷開連接"
+                android:enabled="false"
+                android:layout_marginBottom="8dp" />
+
+            <!-- 按鈕行（零點校正和錄製） -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center">
+
+                <!-- 零點校正按鈕 -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/calibrateButton"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="零點校正"
+                    android:layout_marginEnd="8dp" />
+
+                <!-- 錄製按鈕 -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/recordButton"
+                    style="@style/Widget.Material3.Button"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="開始錄製"
+                    android:backgroundTint="@color/recording_inactive" />
+            </LinearLayout>
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+    <!-- 狀態訊息卡片 -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/statusMessageCard"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:text="斷開連接"
-        android:enabled="false"
-        app:layout_constraintTop_toBottomOf="@id/scanButton"
+        app:cardCornerRadius="8dp"
+        app:cardElevation="1dp"
+        app:cardBackgroundColor="?attr/colorSurfaceVariant"
+        app:layout_constraintTop_toBottomOf="@id/controlCard"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="8dp" />
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginTop="12dp"
+        android:padding="12dp"
+        android:visibility="gone">
 
-    <!-- 零點校正按鈕 -->
-    <Button
-        android:id="@+id/calibrateButton"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:text="零點校正"
-        app:layout_constraintTop_toBottomOf="@id/disconnectButton"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="8dp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
 
-    <!-- 錄製按鈕 -->
-    <Button
-        android:id="@+id/recordButton"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:text="開始錄製"
-        android:backgroundTint="#4CAF50"
-        app:layout_constraintTop_toBottomOf="@id/calibrateButton"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="8dp" />
+            <!-- 校正狀態/進度 -->
+            <TextView
+                android:id="@+id/calibrationStatusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="14sp"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:visibility="gone" />
 
-    <!-- 校正狀態/進度 -->
-    <TextView
-        android:id="@+id/calibrationStatusText"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text=""
-        android:textSize="14sp"
-        android:textColor="#FF9800"
-        app:layout_constraintTop_toBottomOf="@id/recordButton"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="8dp"
-        android:visibility="gone" />
-
-    <!-- 錄製狀態 -->
-    <TextView
-        android:id="@+id/recordingStatusText"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text=""
-        android:textSize="14sp"
-        android:textColor="#757575"
-        app:layout_constraintTop_toBottomOf="@id/calibrationStatusText"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="8dp"
-        android:visibility="gone" />
-
-    <!-- 資料計數 -->
-    <TextView
-        android:id="@+id/dataCountText"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="接收資料數: 0"
-        android:textSize="14sp"
-        app:layout_constraintTop_toBottomOf="@id/recordingStatusText"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="16dp" />
+            <!-- 錄製狀態 -->
+            <TextView
+                android:id="@+id/recordingStatusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textSize="14sp"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:layout_marginTop="4dp"
+                android:visibility="gone" />
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
 
     <!-- 分隔線 -->
     <View
         android:id="@+id/divider"
         android:layout_width="0dp"
         android:layout_height="1dp"
-        android:background="#CCCCCC"
-        app:layout_constraintTop_toBottomOf="@id/dataCountText"
+        android:background="?attr/colorOutlineVariant"
+        app:layout_constraintTop_toBottomOf="@id/statusMessageCard"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintBottom_toTopOf="@id/scrollView"
