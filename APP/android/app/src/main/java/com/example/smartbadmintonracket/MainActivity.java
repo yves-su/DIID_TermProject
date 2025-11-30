@@ -8,6 +8,8 @@ import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.google.android.material.button.MaterialButton;
+
 import androidx.activity.EdgeToEdge;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
@@ -46,10 +48,10 @@ public class MainActivity extends AppCompatActivity {
     private TextView gyroText;
     private TextView voltageText;
     private TextView latestDataText;
-    private Button scanButton;
-    private Button disconnectButton;
-    private Button calibrateButton;
-    private Button recordButton;
+    private MaterialButton scanButton;
+    private MaterialButton disconnectButton;
+    private MaterialButton calibrateButton;
+    private MaterialButton recordButton;
     private TextView calibrationStatusText;
     private TextView recordingStatusText;
     
@@ -310,6 +312,7 @@ public class MainActivity extends AppCompatActivity {
             if (!isRecording) {
                 // 開始錄製
                 recordButton.setText("停止錄製");
+                recordButton.setIcon(ContextCompat.getDrawable(this, R.drawable.ic_record_stop));
                 recordButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(getResources().getColor(R.color.recording_active, getTheme())));
                 recordingStatusText.setText("錄製中... Session: " + firebaseManager.getCurrentSessionId());
                 recordingStatusText.setVisibility(android.view.View.VISIBLE);
@@ -319,6 +322,7 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 // 停止錄製
                 recordButton.setText("開始錄製");
+                recordButton.setIcon(ContextCompat.getDrawable(this, R.drawable.ic_record_start));
                 recordButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(getResources().getColor(R.color.recording_inactive, getTheme())));
                 recordingStatusText.setText("錄製已停止");
                 recordingStatusText.setTextColor(getResources().getColor(android.R.color.darker_gray, getTheme()));
@@ -336,6 +340,7 @@ public class MainActivity extends AppCompatActivity {
         
         // 初始狀態：未錄製
         recordButton.setText("開始錄製");
+        recordButton.setIcon(ContextCompat.getDrawable(this, R.drawable.ic_record_start));
         recordButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(getResources().getColor(R.color.recording_inactive, getTheme())));
         recordingStatusText.setVisibility(android.view.View.GONE);
     }
