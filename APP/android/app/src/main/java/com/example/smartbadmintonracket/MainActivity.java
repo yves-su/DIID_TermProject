@@ -2,6 +2,7 @@ package com.example.smartbadmintonracket;
 
 import android.Manifest;
 import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.Button;
@@ -167,12 +168,26 @@ public class MainActivity extends AppCompatActivity {
     }
     
     private void checkAndRequestPermissions() {
-        String[] permissions = {
-            Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        };
+        // 根據 Android 版本請求不同的權限
+        // Android 12+ (API 31+): 使用新的 BLE 權限
+        // Android 11 及以下: 使用舊的 BLE 權限 + 位置權限
+        String[] permissions;
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Android 12+ (API 31+)
+            permissions = new String[]{
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            };
+        } else {
+            // Android 11 及以下 (API 30 及以下)
+            permissions = new String[]{
+                Manifest.permission.BLUETOOTH,
+                Manifest.permission.BLUETOOTH_ADMIN,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            };
+        }
         
         boolean needRequest = false;
         for (String permission : permissions) {

@@ -53,6 +53,18 @@ public class ChartManager {
     private Runnable updateRunnable;
     private boolean isUpdating = false;
     
+    // 追蹤最後使用的時間戳，避免重複使用同一筆資料
+    private long lastUsedTimestamp = 0;
+    
+    // 簡單的移動平均濾波器（用於平滑資料）
+    private static final int FILTER_WINDOW_SIZE = 3;  // 3點移動平均
+    private List<Float> accelXFilterBuffer = new ArrayList<>();
+    private List<Float> accelYFilterBuffer = new ArrayList<>();
+    private List<Float> accelZFilterBuffer = new ArrayList<>();
+    private List<Float> gyroXFilterBuffer = new ArrayList<>();
+    private List<Float> gyroYFilterBuffer = new ArrayList<>();
+    private List<Float> gyroZFilterBuffer = new ArrayList<>();
+    
     /**
      * 初始化圖表管理器
      * @param charts 6 個 LineChart 視圖（順序：accelX, accelY, accelZ, gyroX, gyroY, gyroZ）
@@ -128,6 +140,13 @@ public class ChartManager {
         
         YAxis rightAxis = chart.getAxisRight();
         rightAxis.setEnabled(false);  // 禁用右側 Y 軸
+        
+        // 設定圖表邊距（避免曲線太靠近邊緣）
+        // setExtraOffsets 參數單位是像素，需要將 dp 轉換為像素
+        float density = chart.getContext().getResources().getDisplayMetrics().density;
+        float offsetDp = 8f;  // 8dp 邊距
+        float offsetPx = offsetDp * density;
+        chart.setExtraOffsets(offsetPx, offsetPx, offsetPx, offsetPx);  // 左、上、右、下邊距
         
         // 創建資料集
         LineDataSet dataSet = new LineDataSet(null, label);
@@ -208,18 +227,49 @@ public class ChartManager {
                 return;
             }
             
-            // 降採樣：每 100ms 取最新的資料點（從 50Hz 降採樣到 10Hz）
-            // 直接取緩衝區中最後一筆資料（最新的）
-            IMUData latestData = dataBuffer.get(dataBuffer.size() - 1);
-            Log.d(TAG, "updateCharts: 緩衝區大小=" + dataBuffer.size() + ", 取最新資料 timestamp=" + latestData.timestamp);
+            // 尋找最新的、尚未使用的資料點（通過時間戳判斷）
+            IMUData latestData = null;
+            for (int i = dataBuffer.size() - 1; i >= 0; i--) {
+                IMUData data = dataBuffer.get(i);
+                if (data.timestamp > lastUsedTimestamp) {
+                    latestData = data;
+                    break;
+                }
+            }
             
-            // 更新所有圖表
-            updateChart(accelXChart, accelXDataSet, latestData.accelX, 0);
-            updateChart(accelYChart, accelYDataSet, latestData.accelY, 1);
-            updateChart(accelZChart, accelZDataSet, latestData.accelZ, 2);
-            updateChart(gyroXChart, gyroXDataSet, latestData.gyroX, 3);
-            updateChart(gyroYChart, gyroYDataSet, latestData.gyroY, 4);
-            updateChart(gyroZChart, gyroZDataSet, latestData.gyroZ, 5);
+            // 如果沒有新資料，跳過此次更新（避免重複使用舊資料導致曲線平坦）
+            if (latestData == null) {
+                Log.d(TAG, "updateCharts: 沒有新資料，跳過更新（最後使用時間戳: " + lastUsedTimestamp + "）");
+                return;
+            }
+            
+            // 更新最後使用的時間戳
+            lastUsedTimestamp = latestData.timestamp;
+            
+            Log.d(TAG, "updateCharts: 緩衝區大小=" + dataBuffer.size() + ", 使用新資料 timestamp=" + latestData.timestamp);
+            
+            // 應用移動平均濾波器並更新所有圖表
+            // 注意：根據用戶觀察，可能存在軸映射問題，需要確認實際的軸對應關係
+            float filteredAccelX = applyMovingAverage(accelXFilterBuffer, latestData.accelX);
+            float filteredAccelY = applyMovingAverage(accelYFilterBuffer, latestData.accelY);
+            float filteredAccelZ = applyMovingAverage(accelZFilterBuffer, latestData.accelZ);
+            float filteredGyroX = applyMovingAverage(gyroXFilterBuffer, latestData.gyroX);
+            float filteredGyroY = applyMovingAverage(gyroYFilterBuffer, latestData.gyroY);
+            float filteredGyroZ = applyMovingAverage(gyroZFilterBuffer, latestData.gyroZ);
+            
+            // 除錯：記錄原始資料值（每50次更新記錄一次）
+            if (lastUsedTimestamp % 500 == 0) {
+                Log.d(TAG, String.format("原始資料 - accel: [%.3f, %.3f, %.3f] g, gyro: [%.2f, %.2f, %.2f] dps",
+                    latestData.accelX, latestData.accelY, latestData.accelZ,
+                    latestData.gyroX, latestData.gyroY, latestData.gyroZ));
+            }
+            
+            updateChart(accelXChart, accelXDataSet, filteredAccelX, 0);
+            updateChart(accelYChart, accelYDataSet, filteredAccelY, 1);
+            updateChart(accelZChart, accelZDataSet, filteredAccelZ, 2);
+            updateChart(gyroXChart, gyroXDataSet, filteredGyroX, 3);
+            updateChart(gyroYChart, gyroYDataSet, filteredGyroY, 4);
+            updateChart(gyroZChart, gyroZDataSet, filteredGyroZ, 5);
             
             // 清除已處理的資料（保留最新的幾筆以備下次使用）
             if (dataBuffer.size() > DOWNSAMPLE_FACTOR) {
@@ -229,6 +279,29 @@ public class ChartManager {
                 }
             }
         }
+    }
+    
+    /**
+     * 應用移動平均濾波器
+     * @param buffer 濾波器緩衝區
+     * @param newValue 新數值
+     * @return 濾波後的數值
+     */
+    private float applyMovingAverage(List<Float> buffer, float newValue) {
+        buffer.add(newValue);
+        
+        // 保持緩衝區大小
+        if (buffer.size() > FILTER_WINDOW_SIZE) {
+            buffer.remove(0);
+        }
+        
+        // 計算平均值
+        float sum = 0f;
+        for (Float value : buffer) {
+            sum += value;
+        }
+        
+        return sum / buffer.size();
     }
     
     /**
@@ -312,6 +385,17 @@ public class ChartManager {
         synchronized (dataBuffer) {
             dataBuffer.clear();
         }
+        
+        // 清除濾波器緩衝區
+        accelXFilterBuffer.clear();
+        accelYFilterBuffer.clear();
+        accelZFilterBuffer.clear();
+        gyroXFilterBuffer.clear();
+        gyroYFilterBuffer.clear();
+        gyroZFilterBuffer.clear();
+        
+        // 重置時間戳追蹤
+        lastUsedTimestamp = 0;
         
         if (accelXDataSet != null) accelXDataSet.clear();
         if (accelYDataSet != null) accelYDataSet.clear();

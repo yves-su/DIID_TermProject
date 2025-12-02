@@ -107,6 +107,16 @@ void setup() {
     // IMU感測器初始化
     // ------------------------------------------------------------------------
     Serial.println("Initializing LSM6DS3 IMU...");
+    
+    // 設定IMU參數（在begin()之前設定）
+    // 根據README.md規格：加速度計 ±16G，陀螺儀 ±2000 dps
+    myIMU.settings.accelRange = 16;      // 加速度計量程：±16G
+    myIMU.settings.gyroRange = 2000;     // 陀螺儀量程：±2000 dps
+    myIMU.settings.accelSampleRate = 416; // 加速度計輸出頻率：416Hz
+    myIMU.settings.gyroSampleRate = 416;  // 陀螺儀輸出頻率：416Hz
+    myIMU.settings.accelBandWidth = 100;  // 加速度計帶寬：100Hz
+    myIMU.settings.gyroBandWidth = 400;   // 陀螺儀帶寬：400Hz
+    
     if (myIMU.begin() != 0) {
         // IMU初始化失敗
         imuReady = false;
@@ -115,6 +125,15 @@ void setup() {
     } else {
         // IMU初始化成功
         imuReady = true;
+        Serial.println("IMU initialized successfully");
+        Serial.print("Accelerometer range: ±"); Serial.print(myIMU.settings.accelRange); Serial.println("G");
+        Serial.print("Gyroscope range: ±"); Serial.print(myIMU.settings.gyroRange); Serial.println(" dps");
+        Serial.print("Accelerometer ODR: "); Serial.print(myIMU.settings.accelSampleRate); Serial.println(" Hz");
+        Serial.print("Gyroscope ODR: "); Serial.print(myIMU.settings.gyroSampleRate); Serial.println(" Hz");
+        
+        // 驗證暫存器設定是否正確寫入
+        debugIMURegisters();
+        
         Serial.println("timestamp,aX,aY,aZ,gX,gY,gZ");  // 輸出CSV標題
     }
 
@@ -386,21 +405,115 @@ void loop() {
 }
 
 // ============================================================================
-// IMU感測器校正函數
+// IMU暫存器調試函數（驗證設定是否正確寫入）
+// ============================================================================
+void debugIMURegisters() {
+    Serial.println("\n=== IMU Register Debug ===");
+    
+    uint8_t data;
+    uint8_t deviceAddress = 0x6A;  // LSM6DS3 I2C 地址
+    
+    // 檢查加速度計暫存器 (CTRL1_XL - 0x10)
+    Wire.beginTransmission(deviceAddress);
+    Wire.write(0x10);
+    if (Wire.endTransmission() == 0) {
+        Wire.requestFrom(deviceAddress, (uint8_t)1);
+        if (Wire.available()) {
+            data = Wire.read();
+            Serial.print("Register CTRL1_XL (0x10): 0x");
+            if (data < 0x10) Serial.print("0");
+            Serial.println(data, HEX);
+            
+            // 解析 FS_XL[1:0] (位元 3:2)
+            uint8_t fs_xl = (data >> 2) & 0x03;
+            Serial.print("  FS_XL[1:0] = ");
+            Serial.print(fs_xl, BIN);
+            Serial.print(" -> ");
+            switch(fs_xl) {
+                case 0: Serial.println("±2g (預設)"); break;
+                case 1: Serial.println("±16g (目標)"); break;
+                case 2: Serial.println("±4g"); break;
+                case 3: Serial.println("±8g"); break;
+            }
+            
+            // 檢查是否為目標設定 (±16g = 01)
+            if (fs_xl != 1) {
+                Serial.println("  ⚠️ WARNING: 加速度計量程設定失敗！實際為預設值 ±2g");
+                Serial.println("  這會導致讀數被錯誤放大 8 倍！");
+            } else {
+                Serial.println("  ✓ 加速度計量程設定正確：±16g");
+            }
+        } else {
+            Serial.println("  ❌ 無法讀取 CTRL1_XL 暫存器（無回應）");
+        }
+    } else {
+        Serial.println("  ❌ 無法讀取 CTRL1_XL 暫存器（I2C 錯誤）");
+    }
+    
+    // 檢查陀螺儀暫存器 (CTRL2_G - 0x11)
+    Wire.beginTransmission(deviceAddress);
+    Wire.write(0x11);
+    if (Wire.endTransmission() == 0) {
+        Wire.requestFrom(deviceAddress, (uint8_t)1);
+        if (Wire.available()) {
+            data = Wire.read();
+            Serial.print("Register CTRL2_G (0x11): 0x");
+            if (data < 0x10) Serial.print("0");
+            Serial.println(data, HEX);
+            
+            // 檢查 FS_125 位元 (位元 1)
+            bool fs_125 = (data >> 1) & 0x01;
+            if (fs_125) {
+                Serial.println("  FS_125 = 1 -> ±125dps (專用模式)");
+            } else {
+                // 解析 FS_G[3:2] (位元 3:2)
+                uint8_t fs_g = (data >> 2) & 0x03;
+                Serial.print("  FS_G[3:2] = ");
+                Serial.print(fs_g, BIN);
+                Serial.print(" -> ");
+                switch(fs_g) {
+                    case 0: Serial.println("±250dps (預設)"); break;
+                    case 1: Serial.println("±500dps"); break;
+                    case 2: Serial.println("±1000dps"); break;
+                    case 3: Serial.println("±2000dps (目標)"); break;
+                }
+                
+                // 檢查是否為目標設定 (±2000dps = 11)
+                if (fs_g != 3) {
+                    Serial.println("  ⚠️ WARNING: 陀螺儀量程設定失敗！實際為預設值 ±250dps");
+                    Serial.println("  這會導致讀數被錯誤放大 8 倍！");
+                } else {
+                    Serial.println("  ✓ 陀螺儀量程設定正確：±2000dps");
+                }
+            }
+        } else {
+            Serial.println("  ❌ 無法讀取 CTRL2_G 暫存器（無回應）");
+        }
+    } else {
+        Serial.println("  ❌ 無法讀取 CTRL2_G 暫存器（I2C 錯誤）");
+    }
+    
+    Serial.println("==========================\n");
+}
+
+// ============================================================================
+// IMU感測器校正函數（修正版：只校正陀螺儀，不校正加速度計）
 // ============================================================================
 void calibrateIMUOffsets() {
     Serial.println("Starting IMU calibration...");
+    Serial.println("注意：此版本只校正陀螺儀，不校正加速度計");
+    Serial.println("原因：無法保證開機時球拍是水平放置的");
     
     // 初始化累加變數
-    float sumAX = 0, sumAY = 0, sumAZ = 0;  // 加速度累加
+    float sumAX = 0, sumAY = 0, sumAZ = 0;  // 加速度累加（僅用於顯示，不作為offset）
     float sumGX = 0, sumGY = 0, sumGZ = 0;  // 陀螺儀累加
     
     // 進行100次採樣來計算偏移量
     for (int i = 0; i < 100; i++) {
         // 累加原始感測器讀值
-        sumAX += myIMU.readFloatAccelX();  // 加速度X軸
-        sumAY += myIMU.readFloatAccelY();  // 加速度Y軸
-        sumAZ += myIMU.readFloatAccelZ();  // 加速度Z軸
+        sumAX += myIMU.readFloatAccelX();  // 加速度X軸（僅用於顯示）
+        sumAY += myIMU.readFloatAccelY();  // 加速度Y軸（僅用於顯示）
+        sumAZ += myIMU.readFloatAccelZ();  // 加速度Z軸（僅用於顯示）
         sumGX += myIMU.readFloatGyroX();   // 陀螺儀X軸
         sumGY += myIMU.readFloatGyroY();   // 陀螺儀Y軸
         sumGZ += myIMU.readFloatGyroZ();   // 陀螺儀Z軸
@@ -409,12 +522,27 @@ void calibrateIMUOffsets() {
     }
     
     // 計算平均偏移量
-    offsetAX = sumAX / 100.0;                    // 加速度X軸偏移
-    offsetAY = sumAY / 100.0;                    // 加速度Y軸偏移
-    offsetAZ = (sumAZ / 100.0) - 1.0;           // 加速度Z軸偏移 (減去重力加速度1g)
-    offsetGX = sumGX / 100.0;                    // 陀螺儀X軸偏移
-    offsetGY = sumGY / 100.0;                    // 陀螺儀Y軸偏移
-    offsetGZ = sumGZ / 100.0;                    // 陀螺儀Z軸偏移
+    // 加速度計：不進行offset校正（因為無法保證開機時是水平放置的）
+    // 重力向量是姿態解算的重要依據，不應該被當作Offset扣掉
+    offsetAX = 0.0f;  // 加速度X軸：不校正
+    offsetAY = 0.0f;  // 加速度Y軸：不校正
+    offsetAZ = 0.0f;  // 加速度Z軸：不校正（不扣除重力）
+    
+    // 陀螺儀：一定要校正，因為它會漂移
+    offsetGX = sumGX / 100.0;  // 陀螺儀X軸偏移
+    offsetGY = sumGY / 100.0;  // 陀螺儀Y軸偏移
+    offsetGZ = sumGZ / 100.0;  // 陀螺儀Z軸偏移
+    
+    // 顯示校正結果
+    Serial.println("Calibration results:");
+    Serial.print("  Accelerometer (僅顯示，不作為offset): ");
+    Serial.print("X="); Serial.print(sumAX / 100.0, 3);
+    Serial.print(" Y="); Serial.print(sumAY / 100.0, 3);
+    Serial.print(" Z="); Serial.println(sumAZ / 100.0, 3);
+    Serial.print("  Gyroscope offsets: ");
+    Serial.print("X="); Serial.print(offsetGX, 3);
+    Serial.print(" Y="); Serial.print(offsetGY, 3);
+    Serial.print(" Z="); Serial.println(offsetGZ, 3);
     
     Serial.println("IMU calibration completed");
 }

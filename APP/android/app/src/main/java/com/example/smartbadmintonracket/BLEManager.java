@@ -17,6 +17,7 @@ import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -91,6 +92,42 @@ public class BLEManager {
     }
     
     /**
+     * 檢查是否有 BLE 掃描權限（根據 Android 版本）
+     */
+    private boolean hasScanPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Android 12+ (API 31+)
+            return ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) 
+                == PackageManager.PERMISSION_GRANTED;
+        } else {
+            // Android 11 及以下 (API 30 及以下)
+            return ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH) 
+                == PackageManager.PERMISSION_GRANTED &&
+                ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_ADMIN) 
+                == PackageManager.PERMISSION_GRANTED &&
+                ActivityCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) 
+                == PackageManager.PERMISSION_GRANTED;
+        }
+    }
+    
+    /**
+     * 檢查是否有 BLE 連接權限（根據 Android 版本）
+     */
+    private boolean hasConnectPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Android 12+ (API 31+)
+            return ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) 
+                == PackageManager.PERMISSION_GRANTED;
+        } else {
+            // Android 11 及以下 (API 30 及以下)
+            return ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH) 
+                == PackageManager.PERMISSION_GRANTED &&
+                ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_ADMIN) 
+                == PackageManager.PERMISSION_GRANTED;
+        }
+    }
+    
+    /**
      * 開始掃描 BLE 設備
      */
     public void startScan(BLEConnectionCallback callback) {
@@ -111,8 +148,7 @@ public class BLEManager {
         }
         
         // 檢查權限
-        if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) 
-            != PackageManager.PERMISSION_GRANTED) {
+        if (!hasScanPermission()) {
             if (callback != null) {
                 callback.onConnectionFailed("缺少 BLE 掃描權限");
             }
@@ -153,9 +189,7 @@ public class BLEManager {
             return;
         }
         
-        if (bluetoothLeScanner != null && 
-            ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) 
-            == PackageManager.PERMISSION_GRANTED) {
+        if (bluetoothLeScanner != null && hasScanPermission()) {
             bluetoothLeScanner.stopScan(scanCallback);
         }
         
@@ -202,8 +236,7 @@ public class BLEManager {
         }
         
         // 檢查權限
-        if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) 
-            != PackageManager.PERMISSION_GRANTED) {
+        if (!hasConnectPermission()) {
             if (connectionCallback != null) {
                 connectionCallback.onConnectionFailed("缺少 BLE 連接權限");
             }
@@ -233,8 +266,7 @@ public class BLEManager {
                 Log.d(TAG, "BLE 連接成功");
                 
                 // 先請求更大的 MTU（最大 247 bytes），成功後再發現服務
-                if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) 
-                    == PackageManager.PERMISSION_GRANTED) {
+                if (hasConnectPermission()) {
                     boolean mtuRequested = gatt.requestMtu(247);
                     Log.d(TAG, "請求 MTU (247): " + mtuRequested);
                     
@@ -264,8 +296,7 @@ public class BLEManager {
             }
             
             // MTU 協商完成後（無論成功或失敗），開始服務發現
-            if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) 
-                == PackageManager.PERMISSION_GRANTED) {
+            if (hasConnectPermission()) {
                 Log.d(TAG, "MTU 協商完成，開始服務發現");
                 gatt.discoverServices();
             }
@@ -277,8 +308,7 @@ public class BLEManager {
                 Log.d(TAG, "服務發現成功");
                 
                 // 列出所有服務（用於除錯）
-                if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) 
-                    == PackageManager.PERMISSION_GRANTED) {
+                if (hasConnectPermission()) {
                     List<BluetoothGattService> services = gatt.getServices();
                     Log.d(TAG, "找到 " + services.size() + " 個服務:");
                     for (BluetoothGattService s : services) {
@@ -299,8 +329,7 @@ public class BLEManager {
                 Log.d(TAG, "找到目標服務: " + SERVICE_UUID.toString());
                 
                 // 列出服務中的所有特徵（用於除錯）
-                if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) 
-                    == PackageManager.PERMISSION_GRANTED) {
+                if (hasConnectPermission()) {
                     List<BluetoothGattCharacteristic> characteristics = service.getCharacteristics();
                     Log.d(TAG, "服務中有 " + characteristics.size() + " 個特徵:");
                     for (BluetoothGattCharacteristic c : characteristics) {
@@ -337,8 +366,7 @@ public class BLEManager {
                 }
                 
                 // 啟用通知
-                if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) 
-                    == PackageManager.PERMISSION_GRANTED) {
+                if (hasConnectPermission()) {
                     boolean notificationSet = gatt.setCharacteristicNotification(characteristic, true);
                     Log.d(TAG, "設定通知: " + notificationSet);
                     
@@ -538,8 +566,7 @@ public class BLEManager {
         stopScan();
         
         if (bluetoothGatt != null) {
-            if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) 
-                == PackageManager.PERMISSION_GRANTED) {
+            if (hasConnectPermission()) {
                 bluetoothGatt.disconnect();
             }
             bluetoothGatt.close();

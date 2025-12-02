@@ -45,6 +45,12 @@ public class IMUDataParser {
             float gyroY = buffer.getFloat();
             float gyroZ = buffer.getFloat();
             
+            // 除錯：記錄原始解析值（每100筆記錄一次，避免日誌過多）
+            if (timestamp % 100 == 0) {
+                Log.d(TAG, String.format("解析資料 - accel: [%.3f, %.3f, %.3f] g, gyro: [%.2f, %.2f, %.2f] dps",
+                    accelX, accelY, accelZ, gyroX, gyroY, gyroZ));
+            }
+            
             // 讀取電壓原始值 (uint16_t, Little-Endian)
             // 使用 getShort() 讀取有符號 short，然後轉換為無符號 int
             int voltageRaw = buffer.getShort() & 0xFFFF;  // 轉換為無符號 int
