@@ -57,6 +57,10 @@ BLEService imuService("0769bb8e-b496-4fdd-b53b-87462ff423d0");
 BLECharacteristic imuDataChar("8ee82f5b-76c7-4170-8f49-fff786257090", 
                               BLERead | BLENotify, 30);
 
+// 時間同步特徵值，支援寫入功能，用於接收手機時間
+// UUID: a1b2c3d4-e5f6-4789-a012-3456789abcde
+BLECharacteristic timeSyncChar("a1b2c3d4-e5f6-4789-a012-3456789abcde", BLEWrite, 4);
+
 // ============================================================================
 // IMU校正相關變數
 // ============================================================================
@@ -68,6 +72,13 @@ float offsetAX = 0.0f, offsetAY = 0.0f, offsetAZ = 0.0f;
 
 // 陀螺儀偏移量 (用於校正靜止狀態下的零點漂移)
 float offsetGX = 0.0f, offsetGY = 0.0f, offsetGZ = 0.0f;
+
+// ============================================================================
+// 時間同步相關變數
+// ============================================================================
+uint32_t timeBaseMs = 0;              // 基準時間（毫秒，從手機接收，表示從當天 00:00:00 開始的毫秒數）
+unsigned long mcuTimeBaseMs = 0;       // MCU 連線時的 millis()
+bool timeSynced = false;               // 是否已同步時間
 
 // ============================================================================
 // 電源管理相關變數
@@ -134,7 +145,7 @@ void setup() {
         // 驗證暫存器設定是否正確寫入
         debugIMURegisters();
         
-        Serial.println("timestamp,aX,aY,aZ,gX,gY,gZ");  // 輸出CSV標題
+        Serial.println("timestamp,aX,aY,aZ,gX,gY,gZ,voltage");  // 輸出CSV標題
     }
 
     // ------------------------------------------------------------------------
@@ -159,8 +170,13 @@ void setup() {
     
     // 設定BLE服務和特徵
     imuService.addCharacteristic(imuDataChar);  // 將特徵加入服務
+    imuService.addCharacteristic(timeSyncChar); // 將時間同步特徵加入服務
     BLE.addService(imuService);                 // 將服務加入BLE
     imuDataChar.setValue((uint8_t*)"", 0);      // 設定特徵初始值為空
+    timeSyncChar.setValue((uint8_t*)"", 0);      // 設定時間同步特徵初始值為空
+    
+    // 設定時間同步特徵值的寫入回調
+    timeSyncChar.setEventHandler(BLEWritten, handleTimeSync);
     
     // 設定BLE設備名稱和廣播服務
     BLE.setLocalName("SmartRacket");            // 設定設備名稱為SmartRacket
@@ -177,6 +193,62 @@ void setup() {
     Serial.println("BLE advertising started...");
     Serial.println("Device name: SmartRacket");
     Serial.println("Waiting for connection...");
+}
+
+// ============================================================================
+// 時間同步處理函數
+// ============================================================================
+void handleTimeSync(BLEDevice central, BLECharacteristic characteristic) {
+    // 讀取手機發送的時間（4 bytes, uint32_t, Little-Endian）
+    // 時間格式：從當天 00:00:00 開始的毫秒數
+    const uint8_t* data = characteristic.value();
+    int length = characteristic.valueLength();
+    
+    if (length == 4) {
+        // 解析時間（Little-Endian）
+        uint32_t phoneTimeMs = 0;
+        memcpy(&phoneTimeMs, data, 4);
+        
+        // 記錄基準時間和 MCU 當前時間
+        timeBaseMs = phoneTimeMs;
+        mcuTimeBaseMs = millis();
+        timeSynced = true;
+        
+        Serial.print("時間同步成功: 基準時間 = ");
+        Serial.print(timeBaseMs);
+        Serial.print(" ms (從當天 00:00:00 開始), MCU millis() = ");
+        Serial.println(mcuTimeBaseMs);
+    } else {
+        Serial.print("時間同步失敗: 資料長度錯誤 (");
+        Serial.print(length);
+        Serial.println(" bytes, 需要 4 bytes)");
+    }
+}
+
+// ============================================================================
+// 計算從當天 00:00:00 開始的毫秒數（時分秒毫秒格式）
+// ============================================================================
+uint32_t getTimeOfDayMs() {
+    if (!timeSynced) {
+        // 尚未同步，使用 millis()（向下兼容）
+        return (uint32_t)millis();
+    }
+    
+    // 計算從基準點開始經過的毫秒數
+    unsigned long elapsed = millis() - mcuTimeBaseMs;
+    
+    // 計算當前時間（從當天 00:00:00 開始的毫秒數）
+    uint32_t currentTimeMs = timeBaseMs + elapsed;
+    
+    // 確保不超過一天的毫秒數（86,400,000 ms）
+    const uint32_t MS_PER_DAY = 24UL * 60UL * 60UL * 1000UL;  // 86,400,000
+    if (currentTimeMs >= MS_PER_DAY) {
+        // 如果超過一天，取模（理論上不會發生，但安全起見）
+        currentTimeMs = currentTimeMs % MS_PER_DAY;
+        Serial.println("警告: 時間超過一天，已取模");
+    }
+    
+    return currentTimeMs;
 }
 
 // ============================================================================
@@ -268,7 +340,11 @@ void loop() {
         float calibrationConstant = 8.11f;  // 根據當前讀值重新校準（2025-01-24）
         float voltage = (float)voltageRaw * calibrationConstant / 4096.0f;
         
-        // 輸出格式：aX,aY,aZ,gX,gY,gZ,voltage
+        // 輸出格式：timestamp,aX,aY,aZ,gX,gY,gZ,voltage
+        // 使用 getTimeOfDayMs() 取得時間（連線後使用同步時間，未連線使用 millis()）
+        uint32_t outputTimestamp = getTimeOfDayMs();
+        Serial.print(outputTimestamp);  // 時間戳記（從當天 00:00:00 開始的毫秒數，或 millis()）
+        Serial.print(',');
         Serial.print(aX, 8);  // 加速度 X
         Serial.print(',');
         Serial.print(aY, 8);  // 加速度 Y
@@ -332,7 +408,8 @@ void loop() {
             uint8_t buffer[30];  // 資料緩衝區
             
             // 重新讀取最新資料（確保資料是最新的）
-            uint32_t timestamp = millis();
+            // 計算從當天 00:00:00 開始的毫秒數（時分秒毫秒格式）
+            uint32_t timestamp = getTimeOfDayMs();
             float aX = 0, aY = 0, aZ = 0;
             float gX = 0, gY = 0, gZ = 0;
             
@@ -398,6 +475,10 @@ void loop() {
         static bool firstDisconnection = true;
         if (firstDisconnection) {
             Serial.println("Disconnected from central");
+            // 重置時間同步狀態（下次連線時需要重新同步）
+            timeSynced = false;
+            timeBaseMs = 0;
+            mcuTimeBaseMs = 0;
             firstDisconnection = false;
         }
         delay(10);  // 減少延遲，讓串列輸出更順暢

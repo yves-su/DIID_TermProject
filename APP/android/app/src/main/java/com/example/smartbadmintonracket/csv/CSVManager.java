@@ -34,16 +34,20 @@ public class CSVManager {
     // 時間對齊配置（10 分鐘 = 600000 毫秒）
     private static final long TIME_INTERVAL_MS = 10 * 60 * 1000; // 10 分鐘
     
-    // CSV 欄位標題
+    // CSV 欄位標題（使用可讀的日期時間格式）
     private static final String CSV_HEADER = "timestamp,receivedAt,accelX,accelY,accelZ,gyroX,gyroY,gyroZ\n";
+    
+    // 日期時間格式化器（用於將時間戳記轉換為可讀格式，Excel 更容易識別）
+    private static final SimpleDateFormat DATE_TIME_FORMAT = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss.SSS", Locale.getDefault());
     
     // 當前狀態
     private Context context;
     private File currentFile;
     private FileWriter currentWriter;
-    private long currentFileStartTime; // 當前檔案對應的 10 分鐘倍數時間點
+    private long currentFileStartTime; // 當前檔案對應的時間點（第一個檔案用第一筆資料時間，之後用 10 分鐘倍數）
     private boolean isRecordingMode = false;
     private boolean isInitialized = false;
+    private boolean isFirstFile = true; // 是否為第一個檔案（用第一筆資料時間命名）
     
     // 待寫入資料緩衝區（用於批次寫入以提高效率）
     private List<IMUData> pendingData;
@@ -106,29 +110,21 @@ public class CSVManager {
         isRecordingMode = enabled;
         
         if (enabled) {
-            // 開始錄製：初始化當前檔案
+            // 開始錄製：初始化（但不立即開啟檔案，等待第一筆資料）
             if (!isInitialized) {
                 initialize();
             }
             
-            try {
-                // 計算當前時間對應的 10 分鐘倍數時間點
-                long now = System.currentTimeMillis();
-                currentFileStartTime = alignTo10Minutes(now);
-                
-                // 開啟新檔案
-                openNewFile(currentFileStartTime);
-                
-                Log.d(TAG, "錄製模式已開啟，檔案: " + (currentFile != null ? currentFile.getName() : "null"));
-            } catch (Exception e) {
-                Log.e(TAG, "開啟錄製檔案失敗: " + e.getMessage(), e);
-                showErrorToast("無法開啟 CSV 檔案: " + e.getMessage());
-                isRecordingMode = false;
-            }
+            // 重置為第一個檔案標記
+            isFirstFile = true;
+            currentFileStartTime = 0;
+            
+            Log.d(TAG, "錄製模式已開啟，等待第一筆資料來建立檔案");
         } else {
             // 停止錄製：寫入剩餘資料並關閉檔案
             Log.d(TAG, "錄製模式已關閉，寫入剩餘資料");
             flushAndCloseFile();
+            isFirstFile = true; // 重置標記
         }
     }
     
@@ -151,15 +147,67 @@ public class CSVManager {
             data.receivedAt = System.currentTimeMillis();
         }
         
+        // 如果是第一個檔案，使用第一筆資料的時間來命名
+        boolean fileJustOpened = false;
+        if (isFirstFile && currentFile == null) {
+            // 第一個檔案：使用第一筆資料的時間（receivedAt）來命名檔案
+            long firstDataTime = data.receivedAt;
+            try {
+                // 使用第一筆資料的時間來命名檔案（例如：22:54:27 -> imu_data_20251205_225427.csv）
+                openNewFile(firstDataTime);
+                isFirstFile = false;
+                fileJustOpened = true;
+                
+                // 設定當前檔案的結束時間點（下一個 10 分鐘倍數）
+                // 例如：22:54:27 -> 23:00:00
+                currentFileStartTime = alignTo10Minutes(firstDataTime);
+                
+                // 如果第一筆資料的時間正好是 10 分鐘倍數（例如：22:50:00），
+                // 則使用下一個 10 分鐘倍數（23:00:00）作為結束點
+                Calendar cal = Calendar.getInstance();
+                cal.setTimeInMillis(firstDataTime);
+                if (cal.get(Calendar.MINUTE) % 10 == 0 && cal.get(Calendar.SECOND) == 0 && cal.get(Calendar.MILLISECOND) == 0) {
+                    // 如果正好是 10 分鐘倍數，使用下一個 10 分鐘倍數作為結束點
+                    cal.add(Calendar.MINUTE, 10);
+                    currentFileStartTime = cal.getTimeInMillis();
+                }
+                
+                Log.d(TAG, "建立第一個檔案，使用第一筆資料時間命名: " + 
+                    (currentFile != null ? currentFile.getName() : "null") +
+                    "，檔案將持續到: " + new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date(currentFileStartTime)));
+                
+                // 將第一筆資料添加到待寫入列表
+                synchronized (dataLock) {
+                    pendingData.add(data);
+                }
+                
+                // 立即寫入第一筆資料
+                if (currentWriter != null) {
+                    writePendingData();
+                }
+                
+                // 第一個檔案建立完成，直接返回，不執行後續的切換檢查
+                return;
+            } catch (Exception e) {
+                Log.e(TAG, "建立第一個檔案失敗: " + e.getMessage(), e);
+                showErrorToast("無法建立 CSV 檔案: " + e.getMessage());
+                isRecordingMode = false;
+                return;
+            }
+        }
+        
         // 檢查是否需要切換檔案（基於 receivedAt）
+        // 從第二個檔案開始，使用 10 分鐘倍數時間點
         long nextFileStartTime = alignTo10Minutes(data.receivedAt);
         if (nextFileStartTime != currentFileStartTime) {
-            // 需要切換到新檔案
+            // 需要切換到新檔案（使用 10 分鐘倍數時間點）
             Log.d(TAG, "時間已跨越 10 分鐘邊界，切換檔案");
             flushAndCloseFile();
             currentFileStartTime = nextFileStartTime;
             try {
                 openNewFile(currentFileStartTime);
+                fileJustOpened = true;
+                Log.d(TAG, "切換到新檔案: " + (currentFile != null ? currentFile.getName() : "null"));
             } catch (Exception e) {
                 Log.e(TAG, "切換檔案失敗: " + e.getMessage(), e);
                 showErrorToast("切換 CSV 檔案失敗: " + e.getMessage());
@@ -169,8 +217,19 @@ public class CSVManager {
         }
         
         // 添加到待寫入列表
+        int pendingSize;
         synchronized (dataLock) {
             pendingData.add(data);
+            pendingSize = pendingData.size();
+        }
+        
+        Log.d(TAG, "資料已添加到待寫入列表，當前待寫入: " + pendingSize + " 筆，currentWriter: " + 
+            (currentWriter != null ? "已開啟" : "未開啟"));
+        
+        // 如果檔案剛開啟，立即寫入一次（確保第一筆資料不會遺漏）
+        if (fileJustOpened && currentWriter != null) {
+            Log.d(TAG, "檔案剛開啟，立即寫入待寫入資料");
+            writePendingData();
         }
     }
     
@@ -247,7 +306,13 @@ public class CSVManager {
      * 批次寫入資料到檔案
      */
     private void writePendingData() {
-        if (!isRecordingMode || !isInitialized || currentWriter == null) {
+        if (!isRecordingMode || !isInitialized) {
+            Log.d(TAG, "writePendingData: 錄製模式=" + isRecordingMode + ", 已初始化=" + isInitialized);
+            return;
+        }
+        
+        if (currentWriter == null) {
+            Log.w(TAG, "writePendingData: currentWriter 為 null，無法寫入");
             return;
         }
         
@@ -260,12 +325,18 @@ public class CSVManager {
             pendingData.clear();
         }
         
+        Log.d(TAG, "開始寫入 " + dataToWrite.size() + " 筆資料到 CSV 檔案");
+        
         try {
             for (IMUData data : dataToWrite) {
+                // 將時間戳記轉換為可讀的日期時間格式
+                String timestampStr = formatTimestamp(data.timestamp);
+                String receivedAtStr = formatTimestamp(data.receivedAt);
+                
                 // 格式化 CSV 行：timestamp,receivedAt,accelX,accelY,accelZ,gyroX,gyroY,gyroZ
-                String csvLine = String.format(Locale.US, "%d,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
-                    data.timestamp,
-                    data.receivedAt,
+                String csvLine = String.format(Locale.US, "%s,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
+                    timestampStr,
+                    receivedAtStr,
                     data.accelX,
                     data.accelY,
                     data.accelZ,
@@ -373,6 +444,22 @@ public class CSVManager {
         mainHandler.post(() -> {
             Toast.makeText(context, message, Toast.LENGTH_LONG).show();
         });
+    }
+    
+    /**
+     * 將時間戳記（毫秒）轉換為可讀的日期時間格式
+     * 格式：yyyy-MM-dd HH:mm:ss.SSS
+     * 例如：2025-12-05 22:20:06.510
+     */
+    private String formatTimestamp(long timestampMs) {
+        try {
+            Date date = new Date(timestampMs);
+            return DATE_TIME_FORMAT.format(date);
+        } catch (Exception e) {
+            Log.e(TAG, "格式化時間戳記失敗: " + timestampMs, e);
+            // 如果格式化失敗，返回原始時間戳記（向下兼容）
+            return String.valueOf(timestampMs);
+        }
     }
     
     /**

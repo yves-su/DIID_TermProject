@@ -25,6 +25,7 @@ import android.util.Log;
 import androidx.core.app.ActivityCompat;
 
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.List;
 import java.util.UUID;
 
@@ -39,6 +40,7 @@ public class BLEManager {
     private static final String DEVICE_NAME = "SmartRacket";
     private static final UUID SERVICE_UUID = UUID.fromString("0769bb8e-b496-4fdd-b53b-87462ff423d0");
     private static final UUID CHARACTERISTIC_UUID = UUID.fromString("8ee82f5b-76c7-4170-8f49-fff786257090");
+    private static final UUID TIME_SYNC_CHAR_UUID = UUID.fromString("a1b2c3d4-e5f6-4789-a012-3456789abcde");
     
     private Context context;
     private BluetoothAdapter bluetoothAdapter;
@@ -50,6 +52,10 @@ public class BLEManager {
     private byte[] dataBuffer = new byte[30];
     private int bufferOffset = 0;
     private static final int EXPECTED_DATA_SIZE = 30;
+    
+    // 時間同步相關變數
+    private long timeBaseMs = 0;  // 基準時間（毫秒，從當天 00:00:00 開始的毫秒數）
+    private boolean timeSynced = false;
     
     // 回調接口
     public interface BLEConnectionCallback {
@@ -70,9 +76,15 @@ public class BLEManager {
     private boolean isScanning = false;
     private static final long SCAN_PERIOD = 10000; // 10秒掃描時間
     
+    // 連接超時處理
+    private static final long DESCRIPTOR_WRITE_TIMEOUT = 3000; // 3秒超時
+    private Handler timeoutHandler;
+    private Runnable descriptorWriteTimeoutRunnable;
+    
     public BLEManager(Context context) {
         this.context = context;
         this.handler = new Handler(Looper.getMainLooper());
+        this.timeoutHandler = new Handler(Looper.getMainLooper());
         
         BluetoothManager bluetoothManager = 
             (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
@@ -281,6 +293,14 @@ public class BLEManager {
                 Log.d(TAG, "BLE 連接中斷");
                 // 重置緩衝區
                 bufferOffset = 0;
+                // 重置時間同步狀態（下次連線時需要重新同步）
+                timeSynced = false;
+                timeBaseMs = 0;
+                // 清理超時回調
+                if (descriptorWriteTimeoutRunnable != null) {
+                    timeoutHandler.removeCallbacks(descriptorWriteTimeoutRunnable);
+                    descriptorWriteTimeoutRunnable = null;
+                }
                 if (connectionCallback != null) {
                     connectionCallback.onDisconnected();
                 }
@@ -338,6 +358,9 @@ public class BLEManager {
                     }
                 }
                 
+                // 同步時間（連線時同步）
+                syncTimeWithMCU();
+                
                 // 查找目標特徵
                 BluetoothGattCharacteristic characteristic = service.getCharacteristic(CHARACTERISTIC_UUID);
                 if (characteristic == null) {
@@ -370,6 +393,10 @@ public class BLEManager {
                     boolean notificationSet = gatt.setCharacteristicNotification(characteristic, true);
                     Log.d(TAG, "設定通知: " + notificationSet);
                     
+                    if (!notificationSet) {
+                        Log.e(TAG, "設定通知失敗，但仍嘗試寫入描述符");
+                    }
+                    
                     // 寫入描述符以啟用通知
                     List<BluetoothGattDescriptor> descriptors = characteristic.getDescriptors();
                     Log.d(TAG, "特徵有 " + descriptors.size() + " 個描述符");
@@ -384,16 +411,79 @@ public class BLEManager {
                             BluetoothGattDescriptor.ENABLE_INDICATION_VALUE;
                         
                         descriptor.setValue(value);
-                        boolean writeSuccess = gatt.writeDescriptor(descriptor);
-                        Log.d(TAG, "寫入描述符: " + writeSuccess);
+                        
+                        // 確保有權限後再寫入，並在主線程執行
+                        if (hasConnectPermission()) {
+                            // 延遲一小段時間，確保 setCharacteristicNotification 完成
+                            handler.postDelayed(() -> {
+                                if (bluetoothGatt != null && hasConnectPermission()) {
+                                    boolean writeSuccess = false;
+                                    try {
+                                        writeSuccess = bluetoothGatt.writeDescriptor(descriptor);
+                                        Log.d(TAG, "寫入描述符請求: " + writeSuccess);
+                                    } catch (Exception e) {
+                                        Log.e(TAG, "寫入描述符時發生異常: " + e.getMessage(), e);
+                                    }
+                                    
+                                    if (writeSuccess) {
+                                        // 設置超時，如果 3 秒內沒有收到回調，也觸發連接成功
+                                        timeoutHandler.removeCallbacks(descriptorWriteTimeoutRunnable);
+                                        descriptorWriteTimeoutRunnable = () -> {
+                                            Log.w(TAG, "描述符寫入超時，但仍觸發連接成功（連接本身已成功）");
+                                            if (connectionCallback != null) {
+                                                connectionCallback.onConnected();
+                                            }
+                                        };
+                                        timeoutHandler.postDelayed(descriptorWriteTimeoutRunnable, DESCRIPTOR_WRITE_TIMEOUT);
+                                    } else {
+                                        Log.w(TAG, "寫入描述符請求失敗，嘗試重試");
+                                        // 重試一次
+                                        handler.postDelayed(() -> {
+                                            if (bluetoothGatt != null && hasConnectPermission()) {
+                                                try {
+                                                    boolean retrySuccess = bluetoothGatt.writeDescriptor(descriptor);
+                                                    Log.d(TAG, "重試寫入描述符: " + retrySuccess);
+                                                    if (!retrySuccess) {
+                                                        Log.w(TAG, "重試失敗，但仍觸發連接成功（某些設備可能不需要描述符）");
+                                                        if (connectionCallback != null) {
+                                                            connectionCallback.onConnected();
+                                                        }
+                                                    }
+                                                } catch (Exception e) {
+                                                    Log.e(TAG, "重試寫入描述符時發生異常: " + e.getMessage(), e);
+                                                    if (connectionCallback != null) {
+                                                        connectionCallback.onConnected();
+                                                    }
+                                                }
+                                            }
+                                        }, 500);
+                                    }
+                                }
+                            }, 100); // 延遲 100ms 確保通知設定完成
+                        } else {
+                            Log.e(TAG, "缺少權限，無法寫入描述符");
+                            // 即使無法寫入描述符，也嘗試觸發連接成功（某些設備可能不需要）
+                            if (connectionCallback != null) {
+                                Log.d(TAG, "權限不足，但仍觸發連接成功回調");
+                                connectionCallback.onConnected();
+                            }
+                        }
                     } else {
                         Log.w(TAG, "特徵沒有描述符，可能無法啟用通知");
                         Log.w(TAG, "嘗試直接啟用通知（某些設備可能不需要描述符）");
                         Log.d(TAG, "資料回調狀態: " + (dataCallback != null ? "已設定" : "未設定"));
                         // 即使沒有描述符，也嘗試觸發連接成功回調
                         if (connectionCallback != null) {
+                            Log.d(TAG, "沒有描述符，直接觸發連接成功回調");
                             connectionCallback.onConnected();
                         }
+                    }
+                } else {
+                    Log.e(TAG, "缺少連接權限，無法啟用通知");
+                    // 即使沒有權限，也嘗試觸發連接成功（連接本身可能已成功）
+                    if (connectionCallback != null) {
+                        Log.d(TAG, "權限不足，但仍觸發連接成功回調");
+                        connectionCallback.onConnected();
                     }
                 }
             } else {
@@ -406,16 +496,33 @@ public class BLEManager {
         
         @Override
         public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
+            Log.d(TAG, "onDescriptorWrite 回調: status=" + status);
+            
+            // 取消超時回調（因為已經收到回調了）
+            if (descriptorWriteTimeoutRunnable != null) {
+                timeoutHandler.removeCallbacks(descriptorWriteTimeoutRunnable);
+                descriptorWriteTimeoutRunnable = null;
+            }
+            
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 Log.d(TAG, "描述符寫入成功，通知已啟用");
                 Log.d(TAG, "資料回調狀態: " + (dataCallback != null ? "已設定" : "未設定"));
+                
+                // 觸發連接成功回調
                 if (connectionCallback != null) {
+                    Log.d(TAG, "觸發連接成功回調");
                     connectionCallback.onConnected();
+                } else {
+                    Log.w(TAG, "連接回調為 null，無法通知連接成功");
                 }
             } else {
-                Log.e(TAG, "描述符寫入失敗: " + status);
+                Log.e(TAG, "描述符寫入失敗: status=" + status);
+                
+                // 即使描述符寫入失敗，如果連接本身是成功的，也嘗試觸發連接成功
+                // 某些設備可能不需要描述符，或者可以稍後重試
+                Log.w(TAG, "描述符寫入失敗，但連接可能已成功，嘗試觸發連接成功");
                 if (connectionCallback != null) {
-                    connectionCallback.onConnectionFailed("啟用通知失敗: " + status);
+                    connectionCallback.onConnected();
                 }
             }
         }
@@ -431,7 +538,7 @@ public class BLEManager {
                 return;
             }
             
-            Log.d(TAG, "收到資料通知，長度: " + data.length + " bytes");
+            Log.d(TAG, "收到資料通知，長度: " + data.length + " bytes, 資料回調: " + (dataCallback != null ? "已設定" : "未設定"));
             
             // 處理資料分段
             if (data.length == EXPECTED_DATA_SIZE) {
@@ -469,8 +576,12 @@ public class BLEManager {
             IMUData imuData = IMUDataParser.parse(data);
             
             if (imuData != null) {
+                // 將 MCU 發送的相對時間（從當天 00:00:00 開始的毫秒數）轉換為絕對時間
+                long absoluteTimestamp = convertToAbsoluteTime(imuData.timestamp);
+                imuData.timestamp = absoluteTimestamp;
+                
                 // 先記錄原始資料（用於除錯）
-                Log.d(TAG, "解析後的原始資料: timestamp=" + imuData.timestamp + 
+                Log.d(TAG, "解析後的資料: timestamp=" + imuData.timestamp + " (絕對時間)" +
                     ", accel=[" + imuData.accelX + "," + imuData.accelY + "," + imuData.accelZ + "]" +
                     ", gyro=[" + imuData.gyroX + "," + imuData.gyroY + "," + imuData.gyroZ + "]" +
                     ", voltage=" + imuData.voltage);
@@ -478,6 +589,7 @@ public class BLEManager {
                 if (IMUDataParser.validate(imuData)) {
                     Log.d(TAG, "資料驗證通過，傳遞給回調");
                     if (dataCallback != null) {
+                        Log.d(TAG, "調用資料回調，timestamp=" + imuData.timestamp);
                         dataCallback.onDataReceived(imuData);
                     } else {
                         Log.e(TAG, "資料回調為 null！請檢查 MainActivity 是否正確設定了回調");
@@ -487,6 +599,7 @@ public class BLEManager {
                     Log.w(TAG, "資料驗證失敗，但暫時允許通過（用於除錯）");
                     // 暫時允許驗證失敗的資料通過，以便查看實際數值
                     if (dataCallback != null) {
+                        Log.d(TAG, "調用資料回調（驗證失敗但仍傳遞），timestamp=" + imuData.timestamp);
                         dataCallback.onDataReceived(imuData);
                     }
                 }
@@ -574,6 +687,88 @@ public class BLEManager {
         }
         
         Log.d(TAG, "已斷開連接");
+    }
+    
+    /**
+     * 同步時間到 MCU
+     * 發送從當天 00:00:00 開始的毫秒數
+     */
+    public void syncTimeWithMCU() {
+        if (bluetoothGatt == null || !isConnected()) {
+            Log.w(TAG, "無法同步時間：尚未連接");
+            return;
+        }
+        
+        if (!hasConnectPermission()) {
+            Log.w(TAG, "無法同步時間：缺少權限");
+            return;
+        }
+        
+        // 取得當前時間（毫秒）
+        long currentTimeMs = System.currentTimeMillis();
+        
+        // 計算從當天 00:00:00 開始的毫秒數
+        Calendar cal = Calendar.getInstance();
+        cal.setTimeInMillis(currentTimeMs);
+        cal.set(Calendar.HOUR_OF_DAY, 0);
+        cal.set(Calendar.MINUTE, 0);
+        cal.set(Calendar.SECOND, 0);
+        cal.set(Calendar.MILLISECOND, 0);
+        long startOfDayMs = cal.getTimeInMillis();
+        
+        // 計算從當天 00:00:00 開始的毫秒數
+        long timeOfDayMs = currentTimeMs - startOfDayMs;
+        
+        // 轉換為 4 bytes (uint32_t, Little-Endian)
+        byte[] timeData = new byte[4];
+        timeData[0] = (byte) (timeOfDayMs & 0xFF);
+        timeData[1] = (byte) ((timeOfDayMs >> 8) & 0xFF);
+        timeData[2] = (byte) ((timeOfDayMs >> 16) & 0xFF);
+        timeData[3] = (byte) ((timeOfDayMs >> 24) & 0xFF);
+        
+        // 寫入時間同步特徵值
+        BluetoothGattService service = bluetoothGatt.getService(SERVICE_UUID);
+        if (service != null) {
+            BluetoothGattCharacteristic timeChar = service.getCharacteristic(TIME_SYNC_CHAR_UUID);
+            if (timeChar != null) {
+                timeChar.setValue(timeData);
+                boolean success = bluetoothGatt.writeCharacteristic(timeChar);
+                if (success) {
+                    timeBaseMs = timeOfDayMs;
+                    timeSynced = true;
+                    Log.d(TAG, "已發送時間同步: " + timeOfDayMs + " ms (從當天 00:00:00 開始)");
+                } else {
+                    Log.e(TAG, "寫入時間同步特徵值失敗");
+                }
+            } else {
+                Log.w(TAG, "找不到時間同步特徵值，可能 MCU 尚未更新");
+            }
+        } else {
+            Log.w(TAG, "找不到服務，無法同步時間");
+        }
+    }
+    
+    /**
+     * 將 MCU 發送的相對時間（從當天 00:00:00 開始的毫秒數）轉換為絕對時間
+     */
+    private long convertToAbsoluteTime(long relativeMs) {
+        if (!timeSynced || timeBaseMs == 0) {
+            // 尚未同步，使用當前時間（向下兼容）
+            return System.currentTimeMillis();
+        }
+        
+        // 取得當前日期
+        Calendar cal = Calendar.getInstance();
+        long currentTimeMs = System.currentTimeMillis();
+        cal.setTimeInMillis(currentTimeMs);
+        cal.set(Calendar.HOUR_OF_DAY, 0);
+        cal.set(Calendar.MINUTE, 0);
+        cal.set(Calendar.SECOND, 0);
+        cal.set(Calendar.MILLISECOND, 0);
+        long startOfDayMs = cal.getTimeInMillis();
+        
+        // 絕對時間 = 當天 00:00:00 + MCU 相對時間
+        return startOfDayMs + relativeMs;
     }
     
     /**

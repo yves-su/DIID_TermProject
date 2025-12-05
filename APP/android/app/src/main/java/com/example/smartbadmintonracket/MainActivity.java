@@ -230,7 +230,9 @@ public class MainActivity extends AppCompatActivity {
                 
                 @Override
                 public void onConnected() {
+                    Log.d("MainActivity", "onConnected 回調被調用");
                     runOnUiThread(() -> {
+                        Log.d("MainActivity", "更新 UI：連接成功");
                         isConnected = true;
                         statusText.setText("狀態: 已連接");
                         statusIndicator.setBackgroundResource(R.drawable.status_indicator_connected);
@@ -238,9 +240,13 @@ public class MainActivity extends AppCompatActivity {
                         disconnectButton.setEnabled(true);
                         // 連接成功後啟動圖表更新
                         if (chartManager != null) {
+                            Log.d("MainActivity", "啟動圖表更新");
                             chartManager.startUpdating();
+                        } else {
+                            Log.w("MainActivity", "chartManager 為 null，無法啟動圖表更新");
                         }
                         Toast.makeText(MainActivity.this, "連接成功！", Toast.LENGTH_SHORT).show();
+                        Log.d("MainActivity", "連接成功 UI 更新完成");
                     });
                 }
                 
@@ -384,6 +390,11 @@ public class MainActivity extends AppCompatActivity {
     }
     
     private void startCalibration() {
+        // 零點校正時同步時間
+        if (bleManager != null) {
+            bleManager.syncTimeWithMCU();
+        }
+        
         calibrationManager.startCalibration(new CalibrationManager.CalibrationCallback() {
                 @Override
             public void onProgress(int current, int total) {
@@ -447,7 +458,9 @@ public class MainActivity extends AppCompatActivity {
     private void setupBLECallbacks() {
         Log.d("MainActivity", "設定 BLE 資料回調");
         bleManager.setDataCallback(data -> {
-            Log.d("MainActivity", "收到 IMU 資料回調: timestamp=" + data.timestamp);
+            Log.d("MainActivity", "收到 IMU 資料回調: timestamp=" + data.timestamp + 
+                ", accel=[" + data.accelX + "," + data.accelY + "," + data.accelZ + "]" +
+                ", gyro=[" + data.gyroX + "," + data.gyroY + "," + data.gyroZ + "]");
             runOnUiThread(() -> {
                 // 如果正在校正，將資料加入校正樣本
                 if (calibrationManager != null && calibrationManager.isCalibrating()) {
