@@ -8,7 +8,8 @@ import argparse
 # import pandas as pd # 如果要讀 Excel
 
 # --- 設定 ---
-SERVER_URL = "ws://localhost:8000/ws/predict"
+# SERVER_URL = "ws://localhost:8000/ws/predict"
+SERVER_URL = "wss://diid-termproject-v2.onrender.com/ws/predict"
 WINDOW_SIZE = 40  # 模擬每次傳送 40 frames
 SAMPLE_RATE = 50  # 50 Hz
 

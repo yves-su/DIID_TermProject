@@ -16,7 +16,8 @@ class HomeProvider extends ChangeNotifier {
   // State Variables
   bool isScanning = false;
   bool isConnected = false;
-  String connectionStatus = "Disconnected";
+  String connectionStatus = "Disconnected"; // BLE Status
+  String serverStatus = "Disconnected"; // Server Status
   double batteryVoltage = 0.0;
   
   // Real-time Graph Data
@@ -29,7 +30,8 @@ class HomeProvider extends ChangeNotifier {
   
   // Configuration (Dynamic)
   double sensitivity = 2.0; // Default threshold
-  String serverIp = "192.168.1.100"; // Default, to be set by UI
+  // String serverIp = "192.168.1.100"; // Local
+  String serverIp = "diid-termproject-v2.onrender.com"; // Cloud
   
   HomeProvider() {
     _init();
@@ -44,7 +46,8 @@ class HomeProvider extends ChangeNotifier {
     });
     
     // Listen to WebSocket stream (Server responses)
-    // Note: We need to connect first.
+    // We connect immediately to wake up the server (Render sleeps on free tier)
+    _connectToServer();
   }
   
   // --- Actions ---
@@ -134,14 +137,36 @@ class HomeProvider extends ChangeNotifier {
   // --- Internal ---
   
   Future<void> _connectToServer() async {
-    final url = "ws://$serverIp:8000/ws/predict";
+    // Check if serverIp is a full URL or just an IP
+    String url;
+    if (serverIp.contains("render.com")) {
+      url = "wss://$serverIp/ws/predict";
+    } else {
+      url = "ws://$serverIp:8000/ws/predict";
+    }
+    
+    serverStatus = "Connecting...";
+    notifyListeners();
+    
     try {
       await _wsService.connect(url);
+      serverStatus = "Connected";
+      notifyListeners();
+      
       _wsService.stream?.listen((message) {
          _handleServerResponse(message);
+      }, onDone: () {
+          serverStatus = "Disconnected";
+          notifyListeners();
+      }, onError: (err) {
+          serverStatus = "Error";
+          notifyListeners();
       });
+      
     } catch (e) {
       print("Server Connect Error: $e");
+      serverStatus = "Failed";
+      notifyListeners();
     }
   }
 

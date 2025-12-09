@@ -33,19 +33,36 @@ class HomeScreen extends StatelessWidget {
                 color: _getStatusColor(provider.connectionStatus),
                 padding: const EdgeInsets.all(8),
                 width: double.infinity,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                child: Column(
                   children: [
-                    Text("BLE: ${provider.connectionStatus}", 
-                        style: const TextStyle(color: Colors.white)),
-                    if (!provider.isConnected)
-                        ElevatedButton(
-                            onPressed: provider.startScan, 
-                            child: const Text("Scan")
-                        )
-                    else 
-                        Text("Battery: ${provider.batteryVoltage.toStringAsFixed(2)}V",
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text("BLE: ${provider.connectionStatus}", 
                             style: const TextStyle(color: Colors.white)),
+                        if (!provider.isConnected)
+                            ElevatedButton(
+                                onPressed: provider.startScan, 
+                                child: const Text("Scan")
+                            )
+                        else 
+                            Text("Battery: ${provider.batteryVoltage.toStringAsFixed(2)}V",
+                                style: const TextStyle(color: Colors.white)),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                     Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text("Server: ${provider.serverStatus}", 
+                            style: const TextStyle(color: Colors.white, fontSize: 12)),
+                        if (provider.serverStatus == "Failed" || provider.serverStatus == "Disconnected")
+                             InkWell(
+                               onTap: () => provider.updateSettings(provider.sensitivity, provider.serverIp), // Reconnect hack
+                               child: const Icon(Icons.refresh, color: Colors.white, size: 16)
+                             )
+                      ],
+                    ),
                   ],
                 ),
               ),
