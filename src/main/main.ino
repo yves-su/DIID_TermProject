@@ -40,6 +40,10 @@ void setup() {
   Serial.begin(115200);
   pinMode(LED_PIN, OUTPUT);
   
+  // Init Voltage Read Pin
+  pinMode(P0_14, OUTPUT);
+  digitalWrite(P0_14, HIGH); // Disable by default
+  
   // 1. Init IMU
   if (myIMU.begin() != 0) {
     Serial.println("IMU Error");
@@ -112,13 +116,38 @@ void readAndSendSensor() {
   packet.gy = myIMU.readFloatGyroY();
   packet.gz = myIMU.readFloatGyroZ();
   
-  // 3. Read Voltage (Mock for now, or analogRead)
-  // XIAO nRF52840 voltage read pin is P0.31 (AIN7) usually?
-  // Or P0.14 for enable?
-  // Let's use a dummy or standard reading
-  uint32_t raw = analogRead(P0_31); 
-  // v = raw * 3.6 / 1024 * coefficient... simplified:
-  packet.voltage = 3700; // Mock 3.7V for now
+  // 3. Read Voltage
+  // High impedance source (1M+510k) requires longer acquisition time.
+  // We use dummy read + averaging to help cap settle.
+  
+  digitalWrite(P0_14, LOW); // Enable
+  delayMicroseconds(50);
+  
+  analogRead(P0_31); // Dummy read to switch mux and charge cap
+  delayMicroseconds(10);
+  
+  uint32_t rawSum = 0;
+  int samples = 5;
+  for(int i=0; i<samples; i++) {
+    rawSum += analogRead(P0_31);
+    delayMicroseconds(10);
+  }
+  
+  digitalWrite(P0_14, HIGH); // Disable
+  
+  float raw = rawSum / (float)samples;
+  
+  // Calc: V = Raw * (3.6 / 1023.0) * (1510.0 / 510.0)
+  // Factor = ~10.42
+  // We also found that for some boards, a small correction is needed due to 
+  // reference offset or resistor tolerance.
+  // User reported 3.79V when expecting 4.2V (Ratio ~1.108).
+  // The high impedance is likely the cause (reading lower).
+  // With dummy read, it should improve. If still low, we might need a cal factor.
+  // Let's stick to the theoretical formula first with better sampling method.
+  
+  float v = raw * (3600.0f / 1023.0f) * (1510.0f / 510.0f);
+  packet.voltage = (uint16_t)v;
 
   // 4. Checksum (XOR)
   // Cast struct to byte array

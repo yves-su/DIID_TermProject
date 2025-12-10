@@ -20,6 +20,8 @@ class HomeProvider extends ChangeNotifier {
   String serverStatus = "Disconnected"; // Server Status
   double batteryVoltage = 0.0;
   
+  StreamSubscription<BluetoothConnectionState>? _deviceStateSubscription;
+
   // Real-time Graph Data
   List<IMUFrame> recentFrames = [];
   
@@ -124,6 +126,17 @@ class HomeProvider extends ChangeNotifier {
       notifyListeners();
       
       await _connectToServer();
+
+      // Listen for unexpected disconnects
+      _deviceStateSubscription?.cancel();
+      _deviceStateSubscription = device.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected && isConnected) {
+           print("HomeProvider: Device Disconnected Unexpectedly");
+           // Perform cleanup but keep "Device Disconnected" status so user knows
+           _performDisconnectCleanup(status: "Device Disconnected");
+        }
+      });
+
     } catch (e) {
       connectionStatus = "Connection Failed";
       isConnected = false;
@@ -132,10 +145,15 @@ class HomeProvider extends ChangeNotifier {
   }
   
   Future<void> disconnect() async {
+    await _performDisconnectCleanup(status: "Disconnected");
+  }
+
+  Future<void> _performDisconnectCleanup({String status = "Disconnected"}) async {
+    _deviceStateSubscription?.cancel();
     await _bleService.disconnect();
     _wsService.disconnect();
     isConnected = false;
-    connectionStatus = "Disconnected";
+    connectionStatus = status;
     notifyListeners();
   }
   
