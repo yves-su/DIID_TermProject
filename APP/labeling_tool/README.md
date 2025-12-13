@@ -72,5 +72,20 @@ pyinstaller --noconfirm --onefile --windowed --name "SmartRacketLabeler_StandAlo
 ```
 
 ## 常見問題
-- **Qt Platform 錯誤**: 確保在虛擬環境中執行。
-- **PyQtGraph 字體模糊**: 若在高解析度螢幕上，程式碼需加入 `os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"`。
+
+## 6. 使用說明 (Phase 1)
+目前版本支援讀取 CSV 並顯示波形圖。
+
+1.  **啟動程式**:
+    ```powershell
+    python main.py
+    ```
+2.  **載入資料**:
+    *   點選選單 `File` -> `Load CSV files...`
+    *   選擇一個或多個由 App 產生的 CSV 檔案。
+3.  **操作圖表**:
+    *   **平移 (Pan)**: 按住滑鼠左鍵拖曳。
+    *   **縮放 (Zoom)**: 滾動滑鼠滾輪（僅水平縮放時間軸）。
+    *   **Y軸縮放**: 在左側 Y 軸刻度上按住右鍵拖曳。
+    *   **顯示合力**: 勾選上方 "Show Magnitude" 可顯示加速度/角速度的合力線。
+
