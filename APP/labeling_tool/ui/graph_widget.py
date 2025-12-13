@@ -1,37 +1,32 @@
 import pyqtgraph as pg
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QCheckBox, QHBoxLayout
 from PySide6.QtCore import Signal, Slot
-import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class TimeAxisItem(pg.AxisItem):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._start_timestamp_ms = 0
+        self._start_dt = datetime.min
 
-    def set_start_timestamp(self, ts_ms):
-        self._start_timestamp_ms = ts_ms
+    def set_start_datetime(self, dt):
+        self._start_dt = dt
 
     def tickStrings(self, values, scale, spacing):
-        """Convert ms to HH:MM:SS.mmm format (Absolute Time)"""
+        """Convert ms to HH:MM:SS.mmm format (Absolute Time using Naive Datetime)"""
         ret = []
         for x in values:
-            # x is relative ms from start of file
-            # Add absolute start time
-            abs_time_ms = int(x + self._start_timestamp_ms)
+            if x < 0:
+                ret.append("")
+                continue
             
-            # Use datetime for easy formatting (handles days wrapping, though rare for single session)
-            # But manual calculation is faster and sufficient for HH:MM:SS
-            total_seconds = abs_time_ms // 1000
-            ms = abs_time_ms % 1000
-            
-            # Convert to local time components (assuming timestamp is already local or needs conversion)
-            # Here we assume the input timestamp was Unix Time (UTC) but we want to display it properly
-            # Actually, standard is to work with datetime directly
-            dt = datetime.fromtimestamp(total_seconds)
-            
-            # Format: HH:MM:SS.mmm
-            ret.append(f"{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}.{ms:03d}")
+            # x is relative ms
+            try:
+                # Naive Math: Start + Delta
+                current_dt = self._start_dt + timedelta(milliseconds=x)
+                ret.append(current_dt.strftime("%H:%M:%S.%f")[:-3])
+            except Exception:
+                ret.append("")
+                
         return ret
 
 class GraphWidget(QWidget):
@@ -115,7 +110,7 @@ class GraphWidget(QWidget):
         self._curves_acc = {}
         self._curves_gyro = {}
         
-    def set_data(self, df, start_timestamp_ms=0):
+    def set_data(self, df, start_dt=None):
         """
         Set DataFrame from CSVReader.
         Expected columns: t_ms, accelX/Y/Z, gyroX/Y/Z, acc_mag, gyro_mag
@@ -124,10 +119,11 @@ class GraphWidget(QWidget):
             return
             
         self._t = df['t_ms'].values
-        self._start_timestamp = start_timestamp_ms 
+        self._start_timestamp = 0 # kept for compatibility if needed, but we rely on axis now
         
         # Update Axis with offset
-        self._plot_gyro.getAxis('bottom').set_start_timestamp(start_timestamp_ms)
+        if start_dt:
+            self._plot_gyro.getAxis('bottom').set_start_datetime(start_dt)
         
         self._acc = {
             'x': df['accelX'].values,
@@ -211,4 +207,30 @@ class GraphWidget(QWidget):
         
         self._cursor_acc.blockSignals(False)
         self._cursor_gyro.blockSignals(False)
+        
+        # Auto-Scroll Logic: Keep cursor visible
+        view_range = self._plot_acc.viewRange()[0] # [min, max]
+        min_x, max_x = view_range
+        
+        # If cursor is out of view (or very close to edge)
+        margin = (max_x - min_x) * 0.05 # 5% margin
+        
+        if t_ms > (max_x - margin) or t_ms < (min_x + margin):
+            # Shift view to center cursor (or at least keep it in view)
+            # Let's keep the same zoom level (width)
+            width = max_x - min_x
+            
+            # Simple panning: Center the cursor
+            new_min = t_ms - (width / 2)
+            new_max = t_ms + (width / 2)
+            
+            # Or Paging: Shift by 90% of width?
+            # Paging is less jarring for eyes than continuous scrolling
+            # But "Center on Cursor" is requested "anytime".
+            # Let's use continuous centering if it's playing (smooth follow)
+            # But setXRange might be expensive if called too fast.
+            # Let's try Centering.
+            
+            self._plot_acc.setXRange(new_min, new_max, padding=0)
+            # Gyro is linked, so it updates automatically
 

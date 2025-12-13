@@ -100,35 +100,32 @@ class CSVReader:
         start_time = self._df_raw.index[0]
         end_time = self._df_raw.index[-1]
         
-        # Round start time to nearest 20ms to allow clean grid
-        # (This is optional but nice for specific alignment)
+        # Stats Calculation
+        self._raw_count = len(self._df_raw)
+        total_seconds = (end_time - start_time).total_seconds()
+        self._expected_count = int(total_seconds * self.TARGET_FREQ_HZ) + 1
         
         # Create DatetimeIndex with 20ms freq
         target_index = pd.date_range(start=start_time, end=end_time, freq=f'{self.TARGET_dt_MS}ms')
         
         # 2. Reindex raw data to this new grid
-        # This introduces NaNs at new grid points
-        # First, combine the original index with target index to ensure we have data points to interpolate from
         combined_index = self._df_raw.index.union(target_index).sort_values()
         df_combined = self._df_raw.reindex(combined_index)
         
         # 3. Interpolate (Time-based linear interpolation)
-        # Select only numeric columns for interpolation
         numeric_cols = ['accelX', 'accelY', 'accelZ', 'gyroX', 'gyroY', 'gyroZ']
         df_combined[numeric_cols] = df_combined[numeric_cols].interpolate(method='time')
         
         # 4. Select only the target grid points
         self._df_resampled = df_combined.reindex(target_index)
         
-        # 5. Handle any remaining NaNs (e.g., if grid extends slightly beyond data)
-        # Forward fill / Backward fill
+        # 5. Handle any remaining NaNs
         self._df_resampled[numeric_cols] = self._df_resampled[numeric_cols].ffill().bfill()
         
         # 6. Add convenience columns
-        # t_ms: milliseconds from start of this session (0 to ...)
         self._df_resampled['t_ms'] = (self._df_resampled.index - start_time).total_seconds() * 1000
         
-        # Calculate Magnitude (Helper for alignment)
+        # Calculate Magnitude
         self._df_resampled['acc_mag'] = np.sqrt(
             self._df_resampled['accelX']**2 + 
             self._df_resampled['accelY']**2 + 
@@ -139,6 +136,28 @@ class CSVReader:
             self._df_resampled['gyroY']**2 + 
             self._df_resampled['gyroZ']**2
         )
+
+    def get_stats(self) -> dict:
+        """Returns statistics aboutloaded data"""
+        if self._df_resampled is None:
+            return {}
+            
+        duration_sec = self.get_duration_ms() / 1000.0
+        # Loss Rate (Data Missing Rate)
+        # Ideally we expected N samples, but we only had Raw samples.
+        # But raw sampling rate might be different. 
+        # Actually better to just show Raw count vs Expected (Target) count.
+        
+        # If sampling rate was unstable, raw_count < expected_count
+        missing_ratio = 1.0 - (self._raw_count / self._expected_count) if self._expected_count > 0 else 0
+        
+        return {
+            "duration_str": str(pd.Timedelta(seconds=duration_sec)).split('.')[0], # HH:MM:SS
+            "total_samples": len(self._df_resampled),
+            "expected_samples": self._expected_count,
+            "raw_samples": self._raw_count,
+            "missing_ratio": missing_ratio
+        }
 
     def get_data(self) -> pd.DataFrame:
         """
@@ -162,6 +181,12 @@ class CSVReader:
         if self._df_raw is not None and not self._df_raw.empty:
             return self._df_raw.index[0].timestamp() * 1000
         return 0.0
+
+    def get_start_datetime(self) -> datetime:
+        """Returns start datetime object (Naive)"""
+        if self._df_raw is not None and not self._df_raw.empty:
+            return self._df_raw.index[0].to_pydatetime()
+        return datetime.min
 
 if __name__ == "__main__":
     # Test stub
