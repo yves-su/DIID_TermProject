@@ -92,14 +92,16 @@ Android App `CSVManager.java` 產出的標準格式：
 
 # 5. 標註與輸出規格
 
+
 ## 5.1 視窗截取 (Windowing)
 當使用者標註瞬間 `t_current`：
 1. **Find Index**: 在 50Hz Grid 中找到最接近的 index `i`。
-2. **Slice**: 取範圍 `[i-60 : i+20]` (共 80 筆)。
-   * 前 60 筆 (1.2秒 context)
+2. **Slice**: 取範圍 `[i-30 : i+9]` (共 40 筆)。
+   * 前 30 筆 (0.6秒 context)
    * 當下 1 筆
-   * 後 19 筆 (0.38秒 follow-through)
-3. **Data Shape**: `(80, 6)` (或 `(80, 8)` 若包含 magnitude)。
+   * 後 9 筆 (0.18秒 follow-through)
+   * *註：此為預設值，可於 Config 中修改。*
+3. **Data Shape**: `(40, 6)` (或 `(40, 8)` 若包含 magnitude)。
 
 ## 5.3 標註類別定義
 系統需內建以下 5 種羽球姿態標籤（支援快捷鍵 1~5）：
@@ -128,7 +130,7 @@ Android App `CSVManager.java` 產出的標準格式：
   },
   "data": [
     [0.12, 0.05, 0.98, 10.5, -2.3, 5.1], // ax, ay, az, gx, gy, gz
-    ... (80 rows)
+    ... (40 rows)
   ]
 }
 ```
