@@ -40,3 +40,4 @@ docs/DataSheet/google-services.json
 
 # Android logs
 smart_racket_app/android/br/dumpstate-*.txt
+.DS_Store
