@@ -35,11 +35,10 @@ class _RealtimePageState extends State<RealtimePage> {
   /// - Render 版優先 /ws，再試根目錄
   /// - 同時保留 ws:// 前綴版本以兼容不同輸入習慣
   static const List<String> _quickServers = [
-    '192.168.0.100:8765',
-    '192.168.0.100:8000',
-    'wss://diid-termproject-v2.onrender.com/ws',
-    'wss://diid-termproject-v2.onrender.com',
-    'ws://192.168.0.100:8765',
+    'wss://diid-termproject-v2.onrender.com/ws/predict',
+    'ws://192.168.0.100:8000/ws/predict',
+    '192.168.0.100:8765', // Legacy/Other
+    'wss://diid-termproject-v2.onrender.com', // Fallback
   ];
 
   // --- HomeProvider capability adapters ---
