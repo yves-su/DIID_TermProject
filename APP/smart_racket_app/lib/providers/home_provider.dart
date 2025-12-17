@@ -394,7 +394,11 @@ class HomeProvider extends ChangeNotifier {
 
     _accOffset[0] = d.accX;
     _accOffset[1] = d.accY;
-    _accOffset[2] = d.accZ;
+    
+    // 修正：Z 軸校正目標是保留重力 (1.0g)，而不是歸零
+    // Offset = 測量值 - 目標值(1.0)
+    // 這樣在計算時：結果 = 測量值 - Offset = 測量值 - (測量值 - 1.0) = 1.0
+    _accOffset[2] = d.accZ - 1.0; 
 
     _gyroOffset[0] = d.gyroX;
     _gyroOffset[1] = d.gyroY;
