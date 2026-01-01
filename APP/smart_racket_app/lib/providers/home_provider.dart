@@ -2,7 +2,10 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../models/imu_data.dart';
 import '../models/imu_frame.dart';
@@ -183,6 +186,25 @@ class HomeProvider extends ChangeNotifier {
     // 需要立刻反映在 UI 的狀態，直接通知（例如連線狀態/按鈕狀態）
     _markDirty();
     notifyListeners();
+  }
+
+  Future<void> requestPermissions() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+
+    // 同時請求 Android 12+ (Scan/Connect) 與 Android 11- (Location) 的權限
+    // permission_handler 會根據 device SDK version 自動處理不支援的權限 (return granted/restricted)
+    // 但我們Explicitly都請求，確保覆蓋所有版本。
+    final needed = [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.locationWhenInUse,
+    ];
+
+    Map<Permission, PermissionStatus> statuses = await needed.request();
+
+    if (kDebugMode) {
+      debugPrint('Permission results: $statuses');
+    }
   }
 
   void updateDeps({
