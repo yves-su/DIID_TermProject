@@ -5,6 +5,9 @@ import time
 from typing import List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import load_model
 
 # --- 配置日誌 (Logging) ---
 # 設定程式的記錄層級，INFO 代表一般訊息，ERROR 代表錯誤
@@ -39,33 +42,63 @@ class SwingRequest(BaseModel):
 
 class SwingClassifier:
     """
-    動作分類模型 (Classifier)
-    功能：判斷這個動作是「殺球(Smash)」、「平抽(Drive)」、「挑球(Toss)」、「切球(Drop)」還是「其他(Other)」。
-    注意：與手機 App 的 (Toss/Other) 對應，不再使用舊版 (Clear/Net)。
+    動作分類模型 (Classifier) - 使用 TensorFlow .h5 模型
     """
     def __init__(self):
-        # 初始化：程式啟動時會執行這裡
-        # self.model = torch.load("c:/models/classifier_v1.pth") # 真實載入方式
-        
-        # 定義我們支援的動作類別
-        self.classes = ["Smash", "Drive", "Toss", "Drop", "Other"]
-        logger.info("Loaded Classifier Model (Mock)") # 紀錄：模型載入完成
+        try:
+            self.model = load_model("badminton_model_v2.h5")
+            logger.info("Loaded Classifier Model: badminton_model_v2.h5")
+        except Exception as e:
+            logger.error(f"Failed to load H5 model: {e}")
+            self.model = None
+
+        # 模型訓練時的類別順序 (需確認 train.py 的 le.classes_ 順序)
+        # 假設: ['drive', 'other', 'smash'] -> 對應到 App 的 ['Drive', 'Other', 'Smash']
+        # 注意：App 還有 Toss / Drop，如果模型只有 3 類，需要映射
+        # 暫定： 0: Drive, 1: Other, 2: Smash
+        self.classes = ["Drive", "Other", "Smash"] 
 
     def predict(self, frames: List[IMUFrame]):
-        """
-        推論 (Predict) 函式
-        輸入：一連串的 IMU 資料 (frames)
-        輸出：預測的動作名稱 (predicted_class) 和信心度 (confidence)
-        """
-        # 這裡應該要寫真實的 AI 推論程式碼...
+        if self.model is None:
+            # Fallback to mock if model failed to load
+            return "Other", 0.0
+
+        # 資料前處理：轉成 (1, 40, 6, 1) 的 numpy array
+        # 1. 取出 acc, gyro
+        data = []
+        for f in frames:
+            # 順序需對應訓練時的 ['aX', 'aY', 'aZ', 'gX', 'gY', 'gZ']
+            row = [f.acc[0], f.acc[1], f.acc[2], f.gyro[0], f.gyro[1], f.gyro[2]]
+            data.append(row)
         
-        # (模擬行為 Mock)
-        # 隨機選一個動作，假設殺球 (Smash) 機率最高 (0.3)
-        predicted_class = random.choices(
-            self.classes, weights=[0.3, 0.2, 0.2, 0.2, 0.1], k=1
-        )[0]
-        # 隨機產生一個信心度 (0.7 ~ 0.99 之間)
-        confidence = random.uniform(0.7, 0.99)
+        # 2. Pad or Truncate to 40 frames
+        # 如果不足 40 筆，補 0；如果超過，取中間或後面
+        target_len = 40
+        data_np = np.array(data)
+        
+        if len(data_np) < target_len:
+            # 補 0
+            pad = np.zeros((target_len - len(data_np), 6))
+            data_np = np.vstack([data_np, pad])
+        elif len(data_np) > target_len:
+            # 取中間 40 點 (通常動作在中間)
+            start = (len(data_np) - target_len) // 2
+            data_np = data_np[start:start+target_len]
+            
+        # 3. Reshape to (1, 40, 6, 1)
+        input_data = data_np.reshape(1, 40, 6, 1)
+
+        # 4. Predict
+        prediction = self.model.predict(input_data)
+        # prediction shape: (1, 3) -> [[p1, p2, p3]]
+        
+        predicted_idx = np.argmax(prediction)
+        confidence = float(np.max(prediction))
+        
+        predicted_class = self.classes[predicted_idx]
+        
+        # 簡單映射：因為 App 支援 Toss/Drop，但模型只有 3 類
+        # 如果是 Other，有可能是 Toss 或 Drop，這邊暫時無法細分
         return predicted_class, confidence
 
 class SpeedRegressor:
