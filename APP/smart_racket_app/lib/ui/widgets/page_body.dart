@@ -27,7 +27,7 @@ class _PageBodyState extends State<PageBody> {
 
   /// ✅ popup 冷卻 15 秒（UI 節流；避免太頻繁彈出）
   /// ※ HomeProvider 可能也有做統計/節流，這裡是 UI 層再保險
-  static const Duration _cooldown = Duration(seconds: 15);
+  static const Duration _cooldown = Duration(seconds: 3);
 
   /// 控制自動隱藏的 timer
   Timer? _hideTimer;
@@ -176,8 +176,8 @@ class _ShotPopupCard extends StatelessWidget {
       'Smash': 'assets/poses/Smash.png',
       'Drive': 'assets/poses/Drive.png',
       'Drop': 'assets/poses/Drop.png',
-      'Clear': 'assets/poses/Clear.png',
-      'Net': 'assets/poses/Net.png',
+      'Toss': 'assets/poses/Clear.png',
+      'Other': 'assets/poses/Net.png',
     };
     return map[t];
   }

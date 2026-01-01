@@ -18,8 +18,8 @@ class StatsPage extends StatelessWidget {
     'Smash': 'assets/poses/Smash.png',
     'Drive': 'assets/poses/Drive.png',
     'Drop': 'assets/poses/Drop.png',
-    'Clear': 'assets/poses/Clear.png',
-    'Net': 'assets/poses/Net.png',
+    'Toss': 'assets/poses/Clear.png',
+    'Other': 'assets/poses/Net.png',
   };
 
   /// 重置統計：先嘗試 provider 可能提供的 resetSwingCounts()
@@ -44,7 +44,7 @@ class StatsPage extends StatelessWidget {
       // Consumer 監聽 HomeProvider：totalSwings 或 swingCounts 更新會自動重建 UI
       builder: (_, p, __) {
         // 顯示順序固定（避免 Map iteration 順序不穩）
-        const keys = ['Smash', 'Drive', 'Drop', 'Clear', 'Net'];
+        const keys = ['Smash', 'Drive', 'Drop', 'Toss', 'Other'];
 
         return PageBody(
           children: [

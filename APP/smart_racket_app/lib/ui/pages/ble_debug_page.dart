@@ -245,7 +245,7 @@ class _BleDebugPanelState extends State<_BleDebugPanel> {
       'Upload: uploaded=$up  pending=$pend',
       'LastResult: type=$lrType  speed=$lrSpeed',
       'Message: $lrMsg',
-      'Counts: Smash=${cnt['Smash']} Drive=${cnt['Drive']} Drop=${cnt['Drop']} Clear=${cnt['Clear']} Net=${cnt['Net']}  total=$total',
+      'Counts: Smash=${cnt['Smash']} Drive=${cnt['Drive']} Drop=${cnt['Drop']} Toss=${cnt['Toss']} Other=${cnt['Other']}  total=$total',
       'GraphFrames: ${p.recentFramesSnapshot.length}  seq=${p.recentFramesSnapshotSeq}',
       'Calibrated: ${p.isCalibrated ? 'YES' : 'NO'}',
     ].join('\n');

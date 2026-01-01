@@ -708,7 +708,7 @@ class _RecordPageState extends State<RecordPage>
   // ========================= UI 區塊：Label 群組（Smash/Drive/Drop/Clear/Net/None） =========================
 
   Widget _labelsGroup(HomeProvider p) {
-    const labels = ['Smash', 'Drive', 'Drop', 'Clear', 'Net'];
+    const labels = ['Smash', 'Drive', 'Drop', 'Toss', 'Other'];
 
     return Column(
       mainAxisSize: MainAxisSize.min,

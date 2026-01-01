@@ -57,25 +57,25 @@ class HomeProvider extends ChangeNotifier {
   bool get isCalibrated => _isCalibrated;
 
   // 伺服器分類結果統計（五類球路）
-  int smash = 0, drive = 0, drop = 0, clear = 0, net = 0;
+  int smash = 0, drive = 0, drop = 0, toss = 0, other = 0;
 
   Map<String, int> get swingCounts => {
     'Smash': smash,
     'Drive': drive,
     'Drop': drop,
-    'Clear': clear,
-    'Net': net,
+    'Toss': toss,
+    'Other': other,
   };
 
-  int get totalSwings => smash + drive + drop + clear + net;
+  int get totalSwings => smash + drive + drop + toss + other;
 
   void resetSwingCounts() {
     // 重置統計（通常用於新一輪測試或 UI 清除）
     smash = 0;
     drive = 0;
     drop = 0;
-    clear = 0;
-    net = 0;
+    toss = 0;
+    other = 0;
     _markDirty();
   }
 
@@ -605,6 +605,10 @@ class HomeProvider extends ChangeNotifier {
               ?.toString();
           speed = (obj['speed'] ?? obj['velocity'])?.toString();
           message = (obj['message'] ?? obj['msg'])?.toString();
+
+          // ✅ 修正名稱映射 (Clear->Toss, Net->Other)
+          if (type == 'Clear') type = 'Toss';
+          if (type == 'Net') type = 'Other';
         } else {
           message = raw;
         }
@@ -617,8 +621,8 @@ class HomeProvider extends ChangeNotifier {
       if (raw.contains('Smash')) type = 'Smash';
       else if (raw.contains('Drive')) type = 'Drive';
       else if (raw.contains('Drop')) type = 'Drop';
-      else if (raw.contains('Clear')) type = 'Clear';
-      else if (raw.contains('Net')) type = 'Net';
+      else if (raw.contains('Clear') || raw.contains('Toss')) type = 'Toss';
+      else if (raw.contains('Net') || raw.contains('Other')) type = 'Other';
     }
 
     // 有分類結果就更新統計並觸發 popup
@@ -634,10 +638,12 @@ class HomeProvider extends ChangeNotifier {
           drop++;
           break;
         case 'Clear':
-          clear++;
+        case 'Toss':
+          toss++;
           break;
         case 'Net':
-          net++;
+        case 'Other':
+          other++;
           break;
       }
       _bumpShotPopup(type);
