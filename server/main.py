@@ -179,6 +179,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 for f in raw_frames
             ]
 
+            # Debug: Check data range
+            acc_vals = np.array([f.acc for f in frames])
+            gyro_vals = np.array([f.gyro for f in frames])
+            logger.info(f"Input Stats - Frames: {len(frames)}")
+            logger.info(f"ACC  Range: {acc_vals.min():.2f} ~ {acc_vals.max():.2f} | Mean: {acc_vals.mean():.2f}")
+            logger.info(f"GYRO Range: {gyro_vals.min():.2f} ~ {gyro_vals.max():.2f} | Mean: {gyro_vals.mean():.2f}")
+
             # 2. 執行 AI 推論 (Inference)
             # 呼叫分類器，猜它是什麼動作
             action_type, confidence = classifier.predict(frames)
@@ -229,7 +236,7 @@ async def websocket_endpoint(websocket: WebSocket):
 # 可以用瀏覽器打開 http://localhost:8000/ 確認伺服器有沒有活著
 @app.get("/")
 def health_check():
-    return {"status": "ok", "version": "v3.0"}
+    return {"status": "ok", "version": "v4.0-TF"}
 
 # --- 程式進入點 ---
 if __name__ == "__main__":
