@@ -46,17 +46,16 @@ class SwingClassifier:
     """
     def __init__(self):
         try:
-            self.model = load_model("badminton_model_v2.h5")
-            logger.info("Loaded Classifier Model: badminton_model_v2.h5")
+            self.model = load_model("badminton_model_v3.h5")
+            logger.info("Loaded Classifier Model: badminton_model_v3.h5")
         except Exception as e:
             logger.error(f"Failed to load H5 model: {e}")
             self.model = None
 
-        # 模型訓練時的類別順序 (需確認 train.py 的 le.classes_ 順序)
-        # 假設: ['drive', 'other', 'smash'] -> 對應到 App 的 ['Drive', 'Other', 'Smash']
-        # 注意：App 還有 Toss / Drop，如果模型只有 3 類，需要映射
-        # 暫定： 0: Drive, 1: Other, 2: Smash
-        self.classes = ["Drive", "Other", "Smash"] 
+        # 模型訓練時的類別順序
+        # 實際測試發現 Keras 是按照字母順序排列的: Drive, Drop, Smash, Toss
+        # User list was: 1: Smash, 2: Drive, 3: Toss, 4: Drop (logical ID, not model output index)
+        self.classes = ["Drive", "Drop", "Smash", "Toss"]
 
     def predict(self, frames: List[IMUFrame]):
         if self.model is None:
@@ -90,15 +89,16 @@ class SwingClassifier:
 
         # 4. Predict
         prediction = self.model.predict(input_data)
-        # prediction shape: (1, 3) -> [[p1, p2, p3]]
+        # prediction shape: (1, 4) -> [[p1, p2, p3, p4]]
         
         predicted_idx = np.argmax(prediction)
         confidence = float(np.max(prediction))
         
-        predicted_class = self.classes[predicted_idx]
+        # 判斷信心度是否足夠
+        if confidence < 0.8:
+            return "Other", confidence
         
-        # 簡單映射：因為 App 支援 Toss/Drop，但模型只有 3 類
-        # 如果是 Other，有可能是 Toss 或 Drop，這邊暫時無法細分
+        predicted_class = self.classes[predicted_idx]
         return predicted_class, confidence
 
 class SpeedRegressor:
@@ -201,8 +201,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 "message": ""     # 給使用者看的訊息
             }
 
-            # 設定信心門檻：只有信心度 > 0.6 我們才把它當真
-            if confidence > 0.6:
+            # 只要不是 "Other" (代表信心度已 > 0.8 且分類成功)，就顯示
+            if action_type != "Other":
                 response["display"] = True # 告訴 APP：請顯示這個結果
                 
                 # 只有殺球 (Smash) 才去計算球速
@@ -214,11 +214,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 else:
                     # 其他球路只顯示名稱
                     response["message"] = f"{action_type}"
-                    logger.info(f"Detected: {action_type}")
+                    logger.info(f"Detected: {action_type} ({confidence:.2f})")
             else:
-                # 信心不足，當作沒發生或雜訊
+                # 信心不足 (< 0.8) 或被分到 Other
                 response["display"] = False
-                response["message"] = "Low confidence"
+                response["message"] = f"Low confidence ({confidence:.2f})"
 
             # 4. 將結果回傳給手機
             # json.dumps 把字典轉回 JSON 文字字串

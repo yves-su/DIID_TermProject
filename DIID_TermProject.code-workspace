@@ -2,6 +2,9 @@
 	"folders": [
 		{
 			"path": "."
+		},
+		{
+			"path": "../DIID_TermProject_v2/src/main"
 		}
 	],
 	"settings": {}
