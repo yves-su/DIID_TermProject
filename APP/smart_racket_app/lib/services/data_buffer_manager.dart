@@ -6,15 +6,22 @@ class DataBufferManager {
   // ---- Windowing / trigger parameters ----
   //
   // DataBufferManager 的職責是把連續 IMUFrame 串流做「條件觸發式視窗擷取」：
-  // - _windowSize：每次要送去推論的主要視窗長度（frames）
-  // - _preTriggerFrames：觸發點之前要保留的歷史 frames（做前導上下文）
+  // - _windowSize：總共要輸出的視窗長度 (Total Length)
+  // - _postTriggerFrames：觸發後要再多收集幾張 (Wait count)
   // - _triggerThresholdG：以加速度向量大小（g）作為觸發門檻
   //
-  // 典型行為：每次 addFrame() 進來先進 buffer，當滿足 trigger 條件且不在 cooldown 期間，
-  // 回傳一段 window（List<IMUFrame>）；否則回傳 null。
+  // 行為：
+  // 平常一直收資料進 Buffer。
+  // 當滿足 Trigger 條件時，進入「收集剩餘資料模式」。
+  // 繼續收集 _postTriggerFrames 張之後，回傳最後的 _windowSize 張。
+  // (這樣就能達成例如：總共 40 張，Trigger 後收集 10 張 -> 結果就是 Trigger 前 30 張 + Trigger 後 10 張)
   int _windowSize = 40;
-  int _preTriggerFrames = 20;
+  int _postTriggerFrames = 10;
   double _triggerThresholdG = 2.0;
+
+  // ---- Collecting State ----
+  bool _isCollecting = false;
+  int _collectingCounter = 0;
 
   // ---- Cooldown control ----
   //
@@ -49,29 +56,28 @@ class DataBufferManager {
 
   // ---- Read-only accessors for UI / settings ----
   int get windowSize => _windowSize;
-  int get preTriggerFrames => _preTriggerFrames;
+  int get postTriggerFrames => _postTriggerFrames; // Export for UI
   Duration get coolDownDuration => _coolDownDuration;
 
   // ---- Window configuration ----
   //
-  // 允許 UI/上層調整 windowSize / preTriggerFrames / cooldown：
-  // - windowSize 下限 10（避免太短失去辨識意義）
-  // - preTriggerFrames 可為 0（表示不取觸發前）
-  // - 若 preTriggerFrames > windowSize，回退成 windowSize/2 的安全值（避免 need 設定失衡）
-  // 最後呼叫 _trimToMaxKeep()，確保 buffer 上限跟新設定一致。
+  // 允許 UI/上層調整參數：
+  // - windowSize 下限 10
+  // - postTriggerFrames 必須 < windowSize (不然全是 trigger 後的資料也不合理，雖然技術上可行)
   void setWindowConfig({
     int? windowSize,
-    int? preTriggerFrames,
+    int? postTriggerFrames, // New: 以前是 preTrigger，現在改設 trigger 後要留多少
     Duration? coolDown,
   }) {
     if (windowSize != null && windowSize >= 10) _windowSize = windowSize;
-    if (preTriggerFrames != null && preTriggerFrames >= 0) {
-      _preTriggerFrames = preTriggerFrames;
+    if (postTriggerFrames != null && postTriggerFrames >= 0) {
+      _postTriggerFrames = postTriggerFrames;
     }
     if (coolDown != null) _coolDownDuration = coolDown;
 
-    if (_preTriggerFrames > _windowSize) {
-      _preTriggerFrames = _windowSize ~/ 2;
+    // Safety: Post 不可大於 Window (會導致抓不到 Trigger 前的資料)
+    if (_postTriggerFrames >= _windowSize) {
+      _postTriggerFrames = _windowSize ~/ 2;
     }
 
     _trimToMaxKeep();
@@ -79,39 +85,60 @@ class DataBufferManager {
 
   // ---- Streaming entry point ----
   //
-  // addFrame() 是資料串流入口：
-  // 1) 先做資料健全性檢查（finite/NaN、防止髒資料污染後續判斷）
-  // 2) 推入 buffer，並做上限裁剪
-  // 3) 用 wall clock 判斷是否仍在 cooldown，若是則不觸發
-  // 4) buffer 未滿 windowSize 時不觸發（避免 early trigger）
-  // 5) 計算加速度向量平方長度 mag2 與門檻平方 th2，比較避免 sqrt 成本
-  // 6) 觸發時更新 _lastTriggerWallMs，並回傳擷取出的 window；否則回 null
+  // addFrame() 是資料串流入口 + 狀態機：
+  // 1) 基本檢查與 buffer 維護
+  // 2) 若正在 Collecting 狀態 -> 倒數，數完這一次就 Output
+  // 3) 若 Idle 狀態 -> 檢查 Trigger -> 若中，進入 Collecting (或直接 Output)
   List<IMUFrame>? addFrame(IMUFrame frame) {
     if (!_isFrameFinite(frame)) return null;
 
     _buffer.addLast(frame);
     _trimToMaxKeep();
 
-    // cooldown（wall clock）
+    // --- State Machine ---
+
+    // 1. 若正在收集 Trigger 後續資料
+    if (_isCollecting) {
+      _collectingCounter--;
+      if (_collectingCounter <= 0) {
+        // 收集完畢，產出資料，回到 Idle
+        _isCollecting = false;
+        return _extractWindow();
+      }
+      return null;
+    }
+
+    // 2. 若在 Idle，檢查 Cooldown
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     if (_lastTriggerWallMs != 0) {
       final dt = nowMs - _lastTriggerWallMs;
       if (dt < _coolDownDuration.inMilliseconds) return null;
     }
 
+    // 3. 檢查 Buffer 長度是否足夠 (至少要有 windowSize 這麼多才有資料可切)
     if (_buffer.length < _windowSize) return null;
 
+    // 4. 檢查 Trigger 條件
     final ax = frame.acc[0];
     final ay = frame.acc[1];
     final az = frame.acc[2];
 
-    // compare squared magnitude (避免 sqrt)
+    // compare squared magnitude (避免 sqrt overhead)
     final mag2 = ax * ax + ay * ay + az * az;
     final th2 = _triggerThresholdG * _triggerThresholdG;
 
     if (mag2 > th2) {
       _lastTriggerWallMs = nowMs;
-      return _extractWindow();
+
+      if (_postTriggerFrames > 0) {
+        // 設定倒數計時，繼續收資料
+        _isCollecting = true;
+        _collectingCounter = _postTriggerFrames;
+        return null;
+      } else {
+        // 不需要後續資料，直接噴
+        return _extractWindow();
+      }
     }
     return null;
   }
@@ -119,48 +146,40 @@ class DataBufferManager {
   // ---- Window extraction ----
   //
   // 視窗擷取策略：
-  // - 需要的總長度 need = preTriggerFrames + windowSize
-  // - 直接把 buffer 轉成 list（固定長度），然後取最後 need 筆
-  // - 若 buffer 本身不夠長，就回傳全部（合理 fallback）
-  //
-  // 注意：這裡的 windowSize 概念是「觸發後應該包含的主視窗長度」，
-  // 但實作是取最後 need 筆，因此結果 window 會包含 trigger 當下附近的區段。
+  // - 直接取 buffer 當中「最後 _windowSize」筆資料
+  // - 因為 State Machine 保證了我們是在 (Trigger + Post) 之後才呼叫這裡
+  // - 所以這一段資料就會包含： [ ... Pre ... (Trigger) ... Post ...]
   List<IMUFrame> _extractWindow() {
-    final need = _preTriggerFrames + _windowSize;
     final list = _buffer.toList(growable: false);
-
-    if (list.length <= need) return list;
-
-    return list.sublist(list.length - need);
+    
+    // 如果 buffer 很長，只取最後 windowSize
+    if (list.length > _windowSize) {
+      return list.sublist(list.length - _windowSize);
+    }
+    
+    // 不足的話就全給 (理論上 addFrame 已經擋過長度 check，不應發生)
+    return list;
   }
 
   // ---- Buffer cap ----
   //
-  // buffer 上限設為 (windowSize + preTriggerFrames) * 3：
-  // - 讓觸發前後仍有足夠上下文可用
-  // - 避免 buffer 太大導致 _extractWindow() 的 toList 成本上升
+  // buffer 上限設為 windowSize * 3 就很夠了
   void _trimToMaxKeep() {
-    // ✅ buffer 上限合理化：太大會讓觸發時 toList 變重
-    final maxKeep = (_windowSize + _preTriggerFrames) * 3;
+    final maxKeep = _windowSize * 3;
     while (_buffer.length > maxKeep) {
       _buffer.removeFirst();
     }
   }
 
   // ---- Hard reset ----
-  //
-  // 清空內部 buffer + 重置 cooldown 計時點，通常用在：
-  // - 切換 session / 開始新錄製
-  // - 斷線重連後避免舊資料殘留觸發
   void clear() {
     _buffer.clear();
     _lastTriggerWallMs = 0;
+    _isCollecting = false;
+    _collectingCounter = 0;
   }
 
   // ---- Data integrity guard ----
-  //
-  // 只接受 timestamp/acc/gyro/voltage 全部 finite 且非 NaN 的 frame；
-  // 同時要求 acc/gyro 必須是 3 維向量（避免上層傳入不完整向量造成 index error）。
   bool _isFrameFinite(IMUFrame f) {
     bool ok3(List<double> a) =>
         a.length == 3 && a.every((v) => v.isFinite && !v.isNaN);
