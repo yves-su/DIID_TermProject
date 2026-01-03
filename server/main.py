@@ -236,6 +236,9 @@ class SpeedRegressor:
             # prediction should be a single float value
             speed = float(prediction[0][0])
             
+            # User requested 5x scaling because model output is too low (~20 km/h)
+            speed = speed * 5.0
+
             # 5. Post-processing (Optional)
             # Ensure positive, sane range
             if speed < 0: speed = 0
