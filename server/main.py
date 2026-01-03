@@ -174,7 +174,7 @@ class SpeedRegressor:
     """
     def __init__(self):
         try:
-            self.model = load_model("speed_estimation_model.h5")
+            self.model = load_model("speed_estimation_model.h5", compile=False)
             logger.info("Loaded Speed Model: speed_estimation_model.h5")
             # Log input shape to help debug
             self.input_shape = self.model.input_shape
