@@ -105,6 +105,8 @@ class SwingClassifier:
                 *[f"{p:.3f}" for p in prediction_probs],
                 final_class
             ])
+
+    def predict(self, frames: List[IMUFrame], client_id: Optional[str] = "unknown"):
         if self.model is None:
             # Fallback to mock if model failed to load
             return "Other", 0.0
