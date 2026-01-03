@@ -46,8 +46,8 @@ class SwingClassifier:
     """
     def __init__(self):
         try:
-            self.model = load_model("badminton_model_v3.h5")
-            logger.info("Loaded Classifier Model: badminton_model_v3.h5")
+            self.model = load_model("badminton_model_v4.h5")
+            logger.info("Loaded Classifier Model: badminton_model_v4.h5")
         except Exception as e:
             logger.error(f"Failed to load H5 model: {e}")
             self.model = None
@@ -56,6 +56,11 @@ class SwingClassifier:
         # 實際測試發現 Keras 是按照字母順序排列的: Drive, Drop, Smash, Toss
         # User list was: 1: Smash, 2: Drive, 3: Toss, 4: Drop (logical ID, not model output index)
         self.classes = ["Drive", "Drop", "Smash", "Toss"]
+        
+        # Normalization Constants (Mean / Std) from Training
+        # Order: AccX, AccY, AccZ, GyroX, GyroY, GyroZ
+        self.mean = np.array([-0.345281, 0.411333, 0.409420, -63.697625, 41.135611, -47.828091])
+        self.std = np.array([2.211481, 2.170975, 2.896732, 305.752180, 521.037064, 329.970234])
 
     def predict(self, frames: List[IMUFrame]):
         if self.model is None:
@@ -70,10 +75,15 @@ class SwingClassifier:
             row = [f.acc[0], f.acc[1], f.acc[2], f.gyro[0], f.gyro[1], f.gyro[2]]
             data.append(row)
         
-        # 2. Pad or Truncate to 40 frames
+        # 2.5 Normalization
+        # Formula: (Raw - Mean) / Std
+        data_np = np.array(data)
+        if len(data_np) > 0:
+            data_np = (data_np - self.mean) / self.std
+
+        # 3. Pad or Truncate to 40 frames
         # 如果不足 40 筆，補 0；如果超過，取中間或後面
         target_len = 40
-        data_np = np.array(data)
         
         if len(data_np) < target_len:
             # 補 0
