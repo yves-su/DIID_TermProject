@@ -229,7 +229,10 @@ class SpeedRegressor:
                 input_data = data_np.reshape(1, 40, 6)
 
             # 4. Predict
-            prediction = self.model.predict(input_data)
+            logger.info(f"SpeedModel Input Shape: {input_data.shape}")
+            prediction = self.model.predict(input_data, verbose=0)
+            logger.info(f"SpeedModel Raw Output: {prediction}")
+
             # prediction should be a single float value
             speed = float(prediction[0][0])
             

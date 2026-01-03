@@ -38,8 +38,9 @@ class _PageBodyState extends State<PageBody> {
   /// 是否顯示 popup（AnimatedOpacity / AnimatedSlide 會依此動畫）
   bool _show = false;
 
-  /// popup 內容：偵測到的動作類型（Smash/Drive/...）
+  /// popup 內容
   String _type = '—';
+  String _message = '';
 
   /// 上一次真正彈出 popup 的時間（用來做 15 秒冷卻）
   DateTime _lastPopupAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -58,7 +59,7 @@ class _PageBodyState extends State<PageBody> {
   }
 
   /// 顯示 popup 並啟動自動隱藏 timer
-  void _showPopup(String type, int seq) {
+  void _showPopup(String type, String message, int seq) {
     // 先取消舊 timer（避免重疊）
     _hideTimer?.cancel();
 
@@ -69,6 +70,7 @@ class _PageBodyState extends State<PageBody> {
     setState(() {
       _lastSeq = seq;
       _type = type;
+      _message = message;
       _show = true;
     });
 
@@ -104,6 +106,7 @@ class _PageBodyState extends State<PageBody> {
         final p2 = context.read<HomeProvider>();
         final seq2 = p2.shotPopupSeq;
         final type2 = p2.shotPopupType;
+        final msg2 = p2.lastResultMessage;
 
         // 若 provider 已經清掉事件、或我們剛好已處理過，就不做事
         if (seq2 == 0 || seq2 == _lastSeq) return;
@@ -116,7 +119,7 @@ class _PageBodyState extends State<PageBody> {
         }
 
         // 真正彈出 popup
-        _showPopup(type2, seq2);
+        _showPopup(type2, msg2, seq2);
       });
     }
 
@@ -149,6 +152,7 @@ class _PageBodyState extends State<PageBody> {
                 duration: const Duration(milliseconds: 180),
                 child: _ShotPopupCard(
                   type: _type,
+                  message: _message,
                   onClose: _closePopup,
                 ),
               ),
@@ -163,10 +167,12 @@ class _PageBodyState extends State<PageBody> {
 /// 上方 popup 卡片：顯示偵測到的揮拍類型 + 對應圖片 + Close 按鈕
 class _ShotPopupCard extends StatelessWidget {
   final String type;
+  final String message;
   final VoidCallback onClose;
 
   const _ShotPopupCard({
     required this.type,
+    required this.message,
     required this.onClose,
   });
 
@@ -276,14 +282,31 @@ class _ShotPopupCard extends StatelessWidget {
 
                 // 動作文字（大字顯示）
                 Expanded(
-                  child: Text(
-                    type,
-                    style: const TextStyle(
-                      color: greenDarker,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 26,
-                      height: 1.0,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        type,
+                        style: const TextStyle(
+                          color: greenDarker,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 26,
+                          height: 1.0,
+                        ),
+                      ),
+                      if (message.isNotEmpty && message != type) 
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            message, // e.g. "Smash! 153.2 km/h"
+                            style: const TextStyle(
+                              color: textDark,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
 
