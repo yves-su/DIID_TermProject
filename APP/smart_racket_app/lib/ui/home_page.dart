@@ -28,7 +28,7 @@ class _HomePageState extends State<HomePage> {
   late final List<Widget> _pages;
 
   /// AppBar 顯示的標題（與 BottomNavigationBar label 對應）
-  static const _titles = ['Link', 'Graph', 'Record', 'Stats', 'BLE Debug'];
+  static const _titles = ['Link', 'Graph', 'Waveform', 'Stats', 'BLE Debug'];
 
   @override
   void initState() {
@@ -133,8 +133,8 @@ class _HomePageState extends State<HomePage> {
             BottomNavigationBarItem(icon: Icon(Icons.link), label: 'Link'),
             BottomNavigationBarItem(icon: Icon(Icons.show_chart), label: 'Graph'),
             BottomNavigationBarItem(
-              icon: Icon(Icons.radio_button_checked_rounded),
-              label: 'Record',
+              icon: Icon(Icons.waves),
+              label: 'Waveform',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.gps_fixed_rounded), // ✅ 使用 target 風格 icon
