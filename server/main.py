@@ -245,6 +245,7 @@ async def websocket_endpoint(websocket: WebSocket):
 # --- 健康檢查 API ---
 # 可以用瀏覽器打開 http://localhost:8000/ 確認伺服器有沒有活著
 @app.get("/")
+@app.head("/")
 def health_check():
     return {"status": "ok", "version": "v4.0-TF"}
 
