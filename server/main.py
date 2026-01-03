@@ -62,7 +62,49 @@ class SwingClassifier:
         self.mean = np.array([-0.345281, 0.411333, 0.409420, -63.697625, 41.135611, -47.828091])
         self.std = np.array([2.211481, 2.170975, 2.896732, 305.752180, 521.037064, 329.970234])
 
-    def predict(self, frames: List[IMUFrame]):
+    def log_to_csv(self, client_id, raw_data_list, normalized_np, prediction_probs, final_class):
+        import csv
+        import os
+        from datetime import datetime
+        
+        filename = "server_prediction_log.csv"
+        file_exists = os.path.isfile(filename)
+        
+        with open(filename, mode='a', newline='') as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                # Header: ClientID, Timestamp, RawStats..., NormStats..., Prediction..., FinalClass, FullData...
+                writer.writerow(['ClientID', 'Time', 
+                                 'RawMeanAcc', 'RawMaxAcc', 'RawMeanGyro', 'RawMaxGyro',
+                                 'NormMean', 'NormMax',
+                                 'P_Drive', 'P_Drop', 'P_Smash', 'P_Toss', 'FinalClass'])
+
+            # Calculate stats
+            raw_np = np.array(raw_data_list)
+            if len(raw_np) > 0:
+                raw_mean_acc = np.mean(raw_np[:, 0:3])
+                raw_max_acc = np.max(np.abs(raw_np[:, 0:3]))
+                raw_mean_gyro = np.mean(raw_np[:, 3:6])
+                raw_max_gyro = np.max(np.abs(raw_np[:, 3:6]))
+                
+                norm_mean = np.mean(normalized_np)
+                norm_max = np.max(np.abs(normalized_np))
+            else:
+                raw_mean_acc = 0
+                raw_max_acc = 0
+                raw_mean_gyro = 0
+                raw_max_gyro = 0
+                norm_mean = 0
+                norm_max = 0
+
+            # Write row
+            writer.writerow([
+                client_id, datetime.now().strftime("%H:%M:%S"),
+                f"{raw_mean_acc:.2f}", f"{raw_max_acc:.2f}", f"{raw_mean_gyro:.2f}", f"{raw_max_gyro:.2f}",
+                f"{norm_mean:.2f}", f"{norm_max:.2f}",
+                *[f"{p:.3f}" for p in prediction_probs],
+                final_class
+            ])
         if self.model is None:
             # Fallback to mock if model failed to load
             return "Other", 0.0
@@ -101,14 +143,26 @@ class SwingClassifier:
         prediction = self.model.predict(input_data)
         # prediction shape: (1, 4) -> [[p1, p2, p3, p4]]
         
+        # Debug: Print raw probabilities
+        probs = prediction[0]
+        logger.info(f"Model Probs: Drive={probs[0]:.3f}, Drop={probs[1]:.3f}, Smash={probs[2]:.3f}, Toss={probs[3]:.3f}")
+
+        
         predicted_idx = np.argmax(prediction)
         confidence = float(np.max(prediction))
         
         # 判斷信心度是否足夠
-        if confidence < 0.8:
+        if confidence < 0.5:
             return "Other", confidence
         
         predicted_class = self.classes[predicted_idx]
+        
+        # Log to CSV for debugging
+        try:
+            self.log_to_csv(client_id, data, data_np, probs, predicted_class)
+        except Exception as e:
+            logger.error(f"CSV Logging failed: {e}")
+            
         return predicted_class, confidence
 
 class SpeedRegressor:
@@ -120,7 +174,7 @@ class SpeedRegressor:
         # self.model = torch.load("c:/models/speed_regressor_v1.pth")
         logger.info("Loaded Speed Model (Mock)")
 
-    def predict(self, frames: List[IMUFrame]):
+    def predict(self, frames: List[IMUFrame], client_id: Optional[str] = "unknown"):
         """
         輸入：一連串的 IMU 資料
         輸出：預測的球速 (float)
@@ -198,7 +252,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # 2. 執行 AI 推論 (Inference)
             # 呼叫分類器，猜它是什麼動作
-            action_type, confidence = classifier.predict(frames)
+            action_type, confidence = classifier.predict(frames, client_id=client_id)
             
             # 3. 準備回傳結果 (Response)
             # 先填好基本資料
