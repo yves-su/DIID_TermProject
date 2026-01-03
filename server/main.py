@@ -167,31 +167,79 @@ class SwingClassifier:
 
 class SpeedRegressor:
     """
-    球速預測模型 (Regressor)
+    球速預測模型 (Regressor) - Raw Data Version
     功能：如果動作是「殺球」，就進一步預測球速幾公里。
     """
     def __init__(self):
-        # self.model = torch.load("c:/models/speed_regressor_v1.pth")
-        logger.info("Loaded Speed Model (Mock)")
+        try:
+            self.model = load_model("speed_estimation_model.h5")
+            logger.info("Loaded Speed Model: speed_estimation_model.h5")
+            # Log input shape to help debug
+            self.input_shape = self.model.input_shape
+            logger.info(f"Speed Model Input Shape: {self.input_shape}")
+        except Exception as e:
+            logger.error(f"Failed to load Speed model: {e}")
+            self.model = None
 
     def predict(self, frames: List[IMUFrame], client_id: Optional[str] = "unknown"):
         """
-        輸入：一連串的 IMU 資料
+        輸入：一連串的 IMU 資料 (Raw Data, No Normalization)
         輸出：預測的球速 (float)
         """
-        # (模擬行為)
-        # 這裡用一個簡單的物理公式來假裝算球速：加速度越快，球速越快
-        # 先找出這一連串資料中，加速度最大值 (Max Magnitude)
-        max_acc = 0
+        if self.model is None:
+            return 0.0
+
+        # 1. 轉成 Raw Data List
+        data = []
         for f in frames:
-            # 算出合力大小：sqrt(x^2 + y^2 + z^2)
-            mag = (f.acc[0]**2 + f.acc[1]**2 + f.acc[2]**2) ** 0.5
-            if mag > max_acc:
-                max_acc = mag
+            # [aX, aY, aZ, gX, gY, gZ]
+            row = [f.acc[0], f.acc[1], f.acc[2], f.gyro[0], f.gyro[1], f.gyro[2]]
+            data.append(row)
         
-        # 隨機乘上一個倍數，讓球速看起來合理 (例如 150 ~ 250 km/h)
-        speed = max_acc * random.uniform(8, 12) 
-        return round(speed, 1) # 四雪五入到小數下一位
+        data_np = np.array(data)
+        
+        # 2. Pad or Truncate to 40 frames
+        target_len = 40
+        if len(data_np) < target_len:
+            pad = np.zeros((target_len - len(data_np), 6))
+            if len(data_np) > 0:
+                data_np = np.vstack([data_np, pad])
+            else:
+                data_np = pad
+        elif len(data_np) > target_len:
+            start = (len(data_np) - target_len) // 2
+            data_np = data_np[start:start+target_len]
+
+        # 3. Reshape based on model expectation
+        # self.input_shape usually looks like (None, 40, 6) or (None, 40, 6, 1)
+        # We need to reshape input_data accordingly.
+        input_data = data_np
+        
+        try:
+            expected_dim = len(self.input_shape) # e.g. 3 for (None, 40, 6), 4 for (None, 40, 6, 1)
+            
+            if expected_dim == 4:
+                input_data = data_np.reshape(1, 40, 6, 1)
+            elif expected_dim == 3:
+                input_data = data_np.reshape(1, 40, 6)
+            else:
+                # Fallback: Try (1, 40, 6)
+                input_data = data_np.reshape(1, 40, 6)
+
+            # 4. Predict
+            prediction = self.model.predict(input_data)
+            # prediction should be a single float value
+            speed = float(prediction[0][0])
+            
+            # 5. Post-processing (Optional)
+            # Ensure positive, sane range
+            if speed < 0: speed = 0
+            
+            return round(speed, 1)
+            
+        except Exception as e:
+            logger.error(f"Speed prediction failed: {e}")
+            return 0.0
 
 # --- 程式啟動初始化 ---
 # 這裡一次把兩個模型載入到記憶體 (RAM) 中
