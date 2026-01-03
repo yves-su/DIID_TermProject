@@ -46,6 +46,10 @@ class HomeProvider extends ChangeNotifier {
   int _recentSnapshotSeq = 0;
   List<IMUFrame> get recentFramesSnapshot => _recentSnapshot;
   int get recentFramesSnapshotSeq => _recentSnapshotSeq;
+  
+  // 視覺化預測視窗：儲存上一次送給 Sever 的 40 frames
+  List<IMUFrame> _lastTriggeredWindow = [];
+  List<IMUFrame> get lastTriggeredWindow => _lastTriggeredWindow;
 
   bool _dirty = false;
   Timer? _uiTimer;
@@ -375,6 +379,9 @@ class HomeProvider extends ChangeNotifier {
       // 視窗推送節流：避免連續觸發造成 WS 洪水
       if (_lastWsMs == 0 || (nowMs - _lastWsMs) >= 200) {
         _lastWsMs = nowMs;
+
+        // 視覺化：捕捉送出去的這一包資料
+        _lastTriggeredWindow = List.of(seg); 
 
         final ws = _ws;
         if (ws != null) {

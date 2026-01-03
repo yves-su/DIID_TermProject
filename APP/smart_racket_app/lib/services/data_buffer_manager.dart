@@ -16,7 +16,7 @@ class DataBufferManager {
   // 繼續收集 _postTriggerFrames 張之後，回傳最後的 _windowSize 張。
   // (這樣就能達成例如：總共 40 張，Trigger 後收集 10 張 -> 結果就是 Trigger 前 30 張 + Trigger 後 10 張)
   int _windowSize = 40;
-  int _postTriggerFrames = 10;
+  int _postTriggerFrames = 20;
   double _triggerThresholdG = 2.0;
 
   // ---- Collecting State ----
