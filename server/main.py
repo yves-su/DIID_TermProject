@@ -325,16 +325,13 @@ async def websocket_endpoint(websocket: WebSocket):
             if action_type != "Other":
                 response["display"] = True # 告訴 APP：請顯示這個結果
                 
-                # 只有殺球 (Smash) 才去計算球速
-                if action_type == "Smash":
-                    speed = speed_model.predict(frames)
-                    response["speed"] = speed
-                    response["message"] = f"Smash! {speed} km/h"
-                    logger.info(f"SMASH: {speed} km/h")
-                else:
-                    # 其他球路只顯示名稱
-                    response["message"] = f"{action_type}"
-                    logger.info(f"Detected: {action_type} ({confidence:.2f})")
+                # Calculate speed for ALL classified actions
+                speed = speed_model.predict(frames)
+                response["speed"] = speed
+                
+                # Update message to always include speed
+                response["message"] = f"{action_type}! {speed} km/h"
+                logger.info(f"Detected: {action_type} ({confidence:.2f}) | Speed: {speed} km/h")
             else:
                 # 信心不足 (< 0.8) 或被分到 Other
                 response["display"] = False
