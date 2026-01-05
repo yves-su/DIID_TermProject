@@ -189,64 +189,78 @@ class SpeedRegressor:
         輸出：預測的球速 (float)
         """
         if self.model is None:
-            return 0.0
+            # Even if model is missing, we can still use Gyro mapping if we want to, 
+            # but original logic returned 0. Let's keep consistent slightly, 
+            # though the user wants mapping. 
+            # However, let's proceed to mapping regardless of AI model status 
+            # effectively decoupling them, but the prompt said "don't delete program".
+            pass
 
-        # 1. 轉成 Raw Data List
-        data = []
-        for f in frames:
-            # [aX, aY, aZ, gX, gY, gZ]
-            row = [f.acc[0], f.acc[1], f.acc[2], f.gyro[0], f.gyro[1], f.gyro[2]]
-            data.append(row)
-        
-        data_np = np.array(data)
-        
-        # 2. Pad or Truncate to 40 frames
-        target_len = 40
-        if len(data_np) < target_len:
-            pad = np.zeros((target_len - len(data_np), 6))
-            if len(data_np) > 0:
-                data_np = np.vstack([data_np, pad])
-            else:
-                data_np = pad
-        elif len(data_np) > target_len:
-            start = (len(data_np) - target_len) // 2
-            data_np = data_np[start:start+target_len]
+        # --- 1. Original AI Model Logic (Preserved) ---
+        ai_speed = 0.0
+        try:
+            if self.model is not None:
+                # 1. 轉成 Raw Data List
+                data = []
+                for f in frames:
+                    # [aX, aY, aZ, gX, gY, gZ]
+                    row = [f.acc[0], f.acc[1], f.acc[2], f.gyro[0], f.gyro[1], f.gyro[2]]
+                    data.append(row)
+                
+                data_np = np.array(data)
+                
+                # 2. Pad or Truncate to 40 frames
+                target_len = 40
+                if len(data_np) < target_len:
+                    pad = np.zeros((target_len - len(data_np), 6))
+                    if len(data_np) > 0:
+                        data_np = np.vstack([data_np, pad])
+                    else:
+                        data_np = pad
+                elif len(data_np) > target_len:
+                    start = (len(data_np) - target_len) // 2
+                    data_np = data_np[start:start+target_len]
 
-        # 3. Reshape based on model expectation
-        # self.input_shape usually looks like (None, 40, 6) or (None, 40, 6, 1)
-        # We need to reshape input_data accordingly.
-        input_data = data_np
+                # 3. Reshape
+                input_data = data_np
+                expected_dim = len(self.input_shape) 
+                if expected_dim == 4:
+                    input_data = data_np.reshape(1, 40, 6, 1)
+                elif expected_dim == 3:
+                    input_data = data_np.reshape(1, 40, 6)
+                else:
+                    input_data = data_np.reshape(1, 40, 6)
+
+                # 4. Predict
+                prediction = self.model.predict(input_data, verbose=0)
+                raw_ai_val = float(prediction[0][0])
+                ai_speed = raw_ai_val * 5.0 # Existing scaling
+                if ai_speed < 0: ai_speed = 0
+                
+        except Exception as e:
+            logger.error(f"AI Speed pred failed: {e}")
+            ai_speed = 0.0
+
+        # --- 2. New Logic: Gyro Y Mapping ---
+        # Rule: Y角速度絕對值 500~2000dps mapping 速度 95~170km/h
+        # Formula: speed = 0.05 * abs(gyro_y) + 70
         
         try:
-            expected_dim = len(self.input_shape) # e.g. 3 for (None, 40, 6), 4 for (None, 40, 6, 1)
+            # Extract Max Abs Gyro Y
+            max_gyro_y = 0.0
+            for f in frames:
+                abs_y = abs(f.gyro[1])
+                if abs_y > max_gyro_y:
+                    max_gyro_y = abs_y
             
-            if expected_dim == 4:
-                input_data = data_np.reshape(1, 40, 6, 1)
-            elif expected_dim == 3:
-                input_data = data_np.reshape(1, 40, 6)
-            else:
-                # Fallback: Try (1, 40, 6)
-                input_data = data_np.reshape(1, 40, 6)
+            mapped_speed = 0.05 * max_gyro_y + 70.0
+            
+            logger.info(f"SpeedCalc: MaxGyroY={max_gyro_y:.1f} -> Mapped={mapped_speed:.1f} km/h | (AI_Model={ai_speed:.1f})")
+            
+            return round(mapped_speed, 1)
 
-            # 4. Predict
-            logger.info(f"SpeedModel Input Shape: {input_data.shape}")
-            prediction = self.model.predict(input_data, verbose=0)
-            logger.info(f"SpeedModel Raw Output: {prediction}")
-
-            # prediction should be a single float value
-            speed = float(prediction[0][0])
-            
-            # User requested 5x scaling because model output is too low (~20 km/h)
-            speed = speed * 5.0
-
-            # 5. Post-processing (Optional)
-            # Ensure positive, sane range
-            if speed < 0: speed = 0
-            
-            return round(speed, 1)
-            
         except Exception as e:
-            logger.error(f"Speed prediction failed: {e}")
+            logger.error(f"Mapping speed failed: {e}")
             return 0.0
 
 # --- 程式啟動初始化 ---

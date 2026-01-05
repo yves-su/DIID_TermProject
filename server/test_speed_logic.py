@@ -13,6 +13,24 @@ except ImportError:
     print("Could not import from main.py. Make sure you are in the server directory.")
     sys.exit(1)
 
+def create_gyro_y_frames(gyro_y_val):
+    frames = []
+    for i in range(40):
+        # Create frames where Gyro Y reaches the target value
+        # We put the max value in the middle
+        if i == 20:
+             gy = gyro_y_val
+        else:
+             gy = gyro_y_val * 0.5 # Some lower value
+             
+        frame = IMUFrame(
+            ts=i * 0.01,
+            acc=[0.0, 0.0, 9.8],
+            gyro=[0.0, gy, 0.0]
+        )
+        frames.append(frame)
+    return frames
+
 def test_speed_model():
     print("Initializing SpeedRegressor...")
     try:
@@ -21,34 +39,37 @@ def test_speed_model():
         print(f"Failed to init model: {e}")
         return
 
-    if speed_model.model is None:
-        print("Model file not found or failed to load. Skipping test.")
-        return
+    # Test Cases for Mapping: 500-2000 dps -> 95-170 km/h
+    # Formula: speed = 0.05 * gyro_y + 70
+    
+    test_cases = [
+        (500, 95.0),
+        (2000, 170.0),
+        (1000, 120.0), # 0.05 * 1000 + 70 = 50 + 70 = 120
+        (0, 70.0),      # Should be handled gracefully, though physically unlikely for a smash
+        (-2000, 170.0)  # Absolute value check
+    ]
 
-    print("Creating dummy frames...")
-    # Create 40 frames of dummy data
-    frames = []
-    for i in range(40):
-        # Simulate some movement
-        frame = IMUFrame(
-            ts=i * 0.01,
-            acc=[0.5 + np.random.rand(), 0.5, 9.8],
-            gyro=[100.0, 200.0, 50.0]
-        )
-        frames.append(frame)
-
-    print("Predicting speed...")
-    try:
-        speed = speed_model.predict(frames)
-        print(f"Predicted Speed: {speed}")
+    print("\n--- Testing Gyro Y Mapping Logic ---")
+    
+    for gyro_y, expected_speed in test_cases:
+        print(f"\nTesting Gyro Y = {gyro_y}...")
+        frames = create_gyro_y_frames(gyro_y)
         
-        if isinstance(speed, (int, float)) and speed >= 0:
-            print("SUCCESS: Speed model returned a valid non-negative number.")
-        else:
-            print(f"FAILURE: Speed model returned invalid type or value: {type(speed)}")
+        try:
+            speed = speed_model.predict(frames)
+            print(f"  Input Max Gyro Y: {abs(gyro_y)}")
+            print(f"  Predicted Speed : {speed}")
+            print(f"  Expected Speed  : {expected_speed}")
             
-    except Exception as e:
-        print(f"FAILURE: Prediction raised exception: {e}")
+            # Allow small float error
+            if abs(speed - expected_speed) < 1.0:
+                 print("  [PASS]")
+            else:
+                 print("  [FAIL]")
+                 
+        except Exception as e:
+            print(f"  [ERROR] Prediction failed: {e}")
 
 if __name__ == "__main__":
     test_speed_model()
