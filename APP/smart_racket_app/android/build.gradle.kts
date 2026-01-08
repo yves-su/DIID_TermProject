@@ -12,11 +12,18 @@ val newBuildDir: Directory =
 rootProject.layout.buildDirectory.value(newBuildDir)
 
 subprojects {
-    val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
-    project.layout.buildDirectory.value(newSubprojectBuildDir)
+    // Only modify build directory if the project is inside the root project (local)
+    // This prevents external plugins (on C: drive) from trying to build into D: drive,
+    // which causes "different roots" errors in Gradle on Windows.
+    if (project.buildFile.parentFile.absolutePath.startsWith(rootProject.projectDir.absolutePath)) {
+        val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
+        project.layout.buildDirectory.value(newSubprojectBuildDir)
+    }
 }
 subprojects {
     project.evaluationDependsOn(":app")
+
+
 }
 
 tasks.register<Delete>("clean") {
