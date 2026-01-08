@@ -237,19 +237,9 @@ class SpeedRegressor:
 
             # prediction should be a single float value
             speed = float(prediction[0][0])
-            
-            # Note: Checking if user still wants the 5x scaling or if the new model is calibrated.
-            # Assuming logic roughly same, but if new model is "att", it might be different.
-            # Safest is to keep simple scaling or remove if model is better.
-            # The user just said "replace model", didn't say "remove scaling".
-            # BUT usually new models aim to be correct. 
-            # I will removing the arbitrary * 5.0 unless I see logic to keep it.
-            # Actually, let's keep it safe: The previous code had `speed = speed * 5.0`.
-            # I'll comment it out for now as the new model might be better calibrated, 
-            # closer to real values. If it's too low, we can add it back.
-            # Re-reading prompt: "replace old with new".
-            
-            # speed = speed * 5.0 
+
+            # Apply 1.5x scaling as requested
+            speed = speed * 1.5
             
             # Ensure positive
             if speed < 0: speed = 0
