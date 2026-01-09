@@ -17,7 +17,8 @@
 ### 📂 檔案結構
 - `main.py`: 伺服器主程式，包含 WebSocket 處理與模型推論邏輯。
 - `badminton_model_v4.h5`: 動作分類模型 (Keras H5)。
-- `speed_estimation_model.h5`: 球速預測模型。
+- `model_speed_cnn_att.keras`: 球速預測模型 (CNN + Attention)。
+- `regression_helpers.py`: 模型自定義層輔助函式。
 
 ### 🔄 資料流 (Data Flow)
 ```mermaid
@@ -47,9 +48,10 @@ sequenceDiagram
 - **信心度門檻**: `0.5` (低於此值視為無效動作 "Other").
 
 ### 2. 球速預測模型 (Speed Regressor)
+- **模型架構**: CNN + Attention (依賴 regression_helpers.py).
 - **觸發條件**: 當分類結果為 `Smash` 時觸發。
 - **輸入**: 原始 Raw Data (不經過 Normalization).
-- **輸出**: 預測球速 (km/h).
+- **輸出**: 預測球速 (km/h)
 
 ---
 
